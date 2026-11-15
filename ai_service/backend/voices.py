@@ -89,6 +89,41 @@ def get_voice(voice_id: str) -> str:
         return DEFAULT_VOICE_ID
     return voice_id
 
+NEUTRAL_RATE = "+0%"
+NEUTRAL_PITCH = "+0Hz"
+
+# Each mentor's own voice, used when the learner has not chosen one.
+MENTOR_VOICES = {
+    "modi": {"voice_id": "en-IN-PrabhatNeural", "rate": "-5%", "pitch": "-2Hz"},
+    "owl": {"voice_id": "en-GB-RyanNeural", "rate": "+0%", "pitch": "+0Hz"},
+    "salman": {"voice_id": "en-IN-PrabhatNeural", "rate": "+5%", "pitch": "-6Hz"},
+    "srk": {"voice_id": "en-IN-PrabhatNeural", "rate": "+0%", "pitch": "+3Hz"},
+}
+
+
+def resolve_mentor_voice(
+    mentor: str | None,
+    voice_id: str | None,
+    rate: str | None,
+    pitch: str | None,
+    pack_voice: dict | None = None,
+) -> tuple[str, str, str]:
+    """Pick voice, rate and pitch: learner's choice, then the mentor's own, then default.
+
+    ``pack_voice`` is the standard voice saved in the mentor's own folder; it
+    comes before the built-in table.
+    """
+    name = mentor.strip().lower() if isinstance(mentor, str) else ""
+    mentor_voice = pack_voice or MENTOR_VOICES.get(name, {})
+
+    selected_voice = get_voice(voice_id or mentor_voice.get("voice_id"))
+    if not rate or rate == NEUTRAL_RATE:
+        rate = mentor_voice.get("rate", NEUTRAL_RATE)
+    if not pitch or pitch == NEUTRAL_PITCH:
+        pitch = mentor_voice.get("pitch", NEUTRAL_PITCH)
+    return selected_voice, rate, pitch
+
+
 def get_all_voices(language: str | None = None, gender: str | None = None) -> list:
     """Return available voices with metadata, optionally filtered.
 

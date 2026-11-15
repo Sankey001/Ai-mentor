@@ -21,6 +21,25 @@ UNTRUSTED_INPUT_INSTRUCTION = (
 )
 
 
+def mentor_persona_instruction(mentor_name: str | None) -> str:
+    """Return the prompt paragraph for the mentor's personality, or "" if none is set.
+
+    The persona comes from the mentor's own pack on the server, never from the request.
+    """
+    from backend.services.mentor_pack import get_mentor_profile
+
+    persona = get_mentor_profile(mentor_name)["persona"]
+    if not persona:
+        return ""
+    return (
+        "The mentor delivering this explanation has the personality described "
+        "between the markers below. Write in the first person in that "
+        "personality: its word choice, humour, energy, and typical phrases, "
+        "while keeping the explanation accurate.\n"
+        f"<mentor_personality>\n{persona}\n</mentor_personality>"
+    )
+
+
 def serialize_user_data(user_data: dict[str, Any]) -> str:
     """Serialize user input as JSON with UTF-8 characters preserved."""
     return json.dumps(user_data, ensure_ascii=False)

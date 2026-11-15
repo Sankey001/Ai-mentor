@@ -32,6 +32,23 @@
   <img src="./docs/images/learner-dashboard-light.png" alt="AI Mentor learner dashboard in light mode" width="49%" />
 </p>
 
+## Live mentor
+
+A mentor built from photos explains each lesson and answers questions out loud, in its own voice, with lip-sync.
+
+- **Try it with Docker** (no GPU needed; standard voice, no lip-sync):
+
+  ```bash
+  docker build -t ai-mentor .
+  docker run --rm -p 127.0.0.1:5173:5173 -p 127.0.0.1:8000:8000 \
+      -e GEMINI_API_KEY=your_key -v ai-mentor-data:/data ai-mentor
+  ```
+
+  Then open `http://localhost:5173/mentor`.
+
+- **How to use it:** [docs/live-mentor-guide.md](./docs/live-mentor-guide.md)
+- **Setup, workers, settings and endpoints:** [ai_service/README.md](./ai_service/README.md)
+
 ## Table of contents
 
 - [Platform overview](#platform-overview)

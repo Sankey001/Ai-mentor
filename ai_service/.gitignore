@@ -63,3 +63,6 @@ backend/outputs/
 Thumbs.db
 .vscode/
 .idea/
+
+# Mentor packs (photos, voice recordings, generated clips) are personal data
+backend/input/*/

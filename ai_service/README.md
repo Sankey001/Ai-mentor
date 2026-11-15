@@ -32,9 +32,13 @@ ai_service/
 |   |-- requirements.txt
 |   |-- .env.example
 |   `-- input/
+|-- workers/          voice worker, face worker, image step
+|-- app/              basic live-conversation page
+|-- start_app.py      starts the API, website and workers together
 |-- outputs/
 |   |-- audio/
 |   |-- text/
+|   |-- talk/         conversation media, removed after an hour
 |   `-- video/
 `-- tests/
 ```
@@ -90,6 +94,13 @@ Create `ai_service/backend/.env` from `ai_service/backend/.env.example`.
 | `DID_SOURCE_URL`        | Optional                                        | D-ID rendering falls back to the local FFmpeg renderer                               |
 | `AI_SERVICE_LOG_LEVEL`  | Optional                                        | Uses `INFO` by default; supports `DEBUG`, `INFO`, `WARNING`, `ERROR`, and `CRITICAL` |
 | `LLM_TIMEOUT_SECONDS`   | Optional                                        | Sets the LLM call timeout in seconds; defaults to `60` when omitted                  |
+| `VOICE_WORKER_PYTHON`   | Optional                                        | The voice worker is not started; mentors use stock voices                            |
+| `FACE_WORKER_PYTHON`    | Optional                                        | The face worker is not started; mentors talk over their idle clip                    |
+| `MUSETALK_DIR`          | Optional                                        | Needed together with `FACE_WORKER_PYTHON`                                            |
+| `PORTRAIT_PYTHON`       | Optional                                        | Mentor images are not turned into clips                                              |
+| `LIVEPORTRAIT_DIR`      | Optional                                        | Needed together with `PORTRAIT_PYTHON`                                               |
+| `VOICE_WORKER_URL`      | Optional                                        | Defaults to `http://127.0.0.1:8101`; set it empty to disable the voice worker        |
+| `FACE_WORKER_URL`       | Optional                                        | Defaults to `http://127.0.0.1:8102`; set it empty to disable the face worker         |
 
 Setup output reports only variable names and `<configured>` markers. Do not commit `.env` files or share credential values.
 
@@ -98,6 +109,98 @@ Setup output reports only variable names and `<configured>` markers. Do not comm
 Place source video files in `ai_service/backend/input/`. File names must match the supported source name in lowercase. The service uses `modi.mp4` as the default local fallback when a requested source video is unavailable.
 
 Only validated local files within the configured input directory are eligible for fallback rendering.
+
+### Mentor packs
+
+A mentor pack is a folder named after the mentor in `ai_service/backend/input/`. Every file in it is optional, but a mentor needs at least one image or clip:
+
+```text
+ai_service/backend/input/asha/
+|-- front.heic        images of the mentor, in any format
+|-- side.webp
+|-- talking_1.mp4     your own clips of the mentor, if you have any
+|-- voice.wav         a clean recording of the mentor's own voice
+`-- mentor.json       the mentor's personality
+```
+
+A folder with a lowercase name made of letters, digits, `-`, or `_` is accepted as a mentor without a code change. Media files in a pack are ignored by Git. Packs can also be created from the website's mentor studio page, which calls `POST /mentors`.
+
+**Images.** Each image becomes a short clip named `auto_<image>_<hash>.mp4` in which the head moves slightly and the eyes blink. The format is read from the file's content, so the file name and extension do not matter. A clip is made once, remade when its image changes, and removed when its image is deleted. Clear, front-facing photos with the mouth closed work best.
+
+**Clips.** All `.mp4` files in the pack, generated or your own, form the mentor's clip library. All clips of one mentor must share the same resolution. In a conversation each sentence uses one clip, so the mentor changes pose between sentences.
+
+**Voice.** With `voice.wav` (or `.mp3`, `.m4a`, `.flac`) in the pack and the voice worker running, the mentor speaks in that voice and accent. Use 10 to 30 seconds of clear speech with no music. Only use a recording of a person who has agreed to have their voice cloned. Without a sample, or when the worker is down, the mentor's stock voice from `MENTOR_VOICES` in `backend/voices.py` is used.
+
+**Personality.** `mentor.json` holds two optional settings:
+
+```json
+{
+  "persona": "Warm and a little playful. Short sentences. Calls bugs 'gremlins'.",
+  "expressiveness": 0.7
+}
+```
+
+`persona` is added to the lesson and conversation prompts, so replies are written the way the mentor talks. `expressiveness` runs from `0` (flat) to `1` (very lively) and applies to the cloned voice; values near `0.5` use the faster Turbo model, and other values make the voice worker switch to the standard model.
+
+A third optional setting chooses the mentor's standard voice, used when it has no recording or the voice worker is down:
+
+```json
+{ "voice": { "voice_id": "en-IN-NeerjaNeural", "rate": "-10%", "pitch": "+5Hz" } }
+```
+
+`voice_id` must be one of the voices returned by `GET /voices`. This setting comes before the built-in `MENTOR_VOICES` table.
+
+### Workers
+
+Three optional tools give mentors a moving face and their own voice. Each runs in its own Python environment outside this repository, and the service keeps working without any of them.
+
+| Tool         | File                        | Model        | What it does                                                   |
+| ------------ | --------------------------- | ------------ | -------------------------------------------------------------- |
+| Image step   | `workers/portrait_maker.py` | LivePortrait | Turns mentor images into moving clips, once per image          |
+| Face worker  | `workers/face_worker.py`    | MuseTalk     | Stays loaded and makes the mentor's mouth follow each sentence |
+| Voice worker | `workers/voice_worker.py`   | Chatterbox   | Stays loaded and speaks text in the mentor's recorded voice    |
+
+The two workers are small HTTP servers that listen on `127.0.0.1` only and accept file paths only inside `ai_service/`. Install each model by following its own README, then point these settings in `backend/.env` at its Python interpreter and folder:
+
+```text
+VOICE_WORKER_PYTHON=/opt/voice_clone/.venv/bin/python
+FACE_WORKER_PYTHON=/opt/lip_sync/.venv/bin/python
+MUSETALK_DIR=/opt/lip_sync/MuseTalk
+PORTRAIT_PYTHON=/opt/portrait/.venv/bin/python
+LIVEPORTRAIT_DIR=/opt/portrait/LivePortrait
+```
+
+A GPU with 8 GB of memory runs both workers together. For faster lip-sync, also place the TAESD decoder (`madebyollin/taesd`) in `MuseTalk/models/taesd`; without it the full decoder is used.
+
+### Fallbacks
+
+Every step has a backup, so a failure lowers quality instead of stopping the mentor:
+
+| Step                   | First choice          | Then                     | Last resort                        |
+| ---------------------- | --------------------- | ------------------------ | ---------------------------------- |
+| Reply text             | Gemini                | Groq                     | A fixed apology line               |
+| Voice                  | Mentor's cloned voice | Stock voice (Edge TTS)   | Text only                          |
+| Face in a conversation | Lip-synced clip       | Audio over the idle clip |                                    |
+| Lesson video           | D-ID                  | Lip-synced clips         | Clip library, then one looped clip |
+
+A worker that cannot be reached is skipped for 20 seconds before it is tried again.
+
+### Access control
+
+The service has no login of its own, so keep it on your own machine or behind the Node API. It still limits what an outsider can do:
+
+- **Other websites cannot make changes.** A state-changing request with an `Origin` header is refused unless the origin is the local website or listed in `ALLOWED_ORIGINS` (comma-separated). Server-side callers send no `Origin` and are not affected.
+- **Rate limits per client address:** 30 conversation turns a minute, and 30 mentor changes an hour.
+- **Uploads:** capped at about 150 MB per request before they are read, 15 MB per photo, 30 MB per recording, and 50 mentors in total. Vector images and images wider or taller than 12,000 pixels are refused.
+
+### Starting everything with one command
+
+```bash
+cd ai_service
+.venv/bin/python start_app.py
+```
+
+`start_app.py` turns new mentor images into clips, then starts the API, the website (when `frontend/` is installed and has a `.env`), the face worker, and the voice worker. It restarts a process that crashes, up to five times a minute, and then leaves it off so the fallbacks take over. Open `http://localhost:5173/mentor` for the classroom, or `http://127.0.0.1:8000/app` for a basic page that needs no website.
 
 ## Running the service
 
@@ -126,19 +229,29 @@ For direct debugging only, the underlying entry point is `ai_service/backend/gra
 
 ## Main API routes
 
-| Method | Route                           | Purpose                                                          |
-| ------ | ------------------------------- | ---------------------------------------------------------------- |
-| `GET`  | `/`                             | Basic service response used for readiness checks                 |
-| `POST` | `/generate`                     | Queue lesson script, narration, video, and subtitle generation   |
-| `POST` | `/generate-quiz`                | Generate a multiple-choice quiz from lesson text                 |
-| `POST` | `/explain-code`                 | Explain, debug, or optimize submitted code                       |
-| `GET`  | `/status/{job_id}`              | Return generation status and generated asset metadata            |
-| `GET`  | `/transcript/{filename}`        | Return a generated transcript                                    |
-| `POST` | `/generate-syllabus`            | Generate a structured course syllabus                            |
-| `POST` | `/generate-flashcards`          | Generate study flashcards from a lesson transcript               |
-| `GET`  | `/voices`                       | Return available narration voices                                |
-| `GET`  | `/video-stream/{filename}`      | Serve a local generated video when cloud delivery is unavailable |
-| `GET`  | `/transcript-stream/{filename}` | Serve a local transcript file                                    |
+| Method   | Route                           | Purpose                                                                                  |
+| -------- | ------------------------------- | ---------------------------------------------------------------------------------------- |
+| `GET`    | `/`                             | Basic service response used for readiness checks                                         |
+| `POST`   | `/generate`                     | Queue lesson script, narration, video, and subtitle generation                           |
+| `POST`   | `/generate-quiz`                | Generate a multiple-choice quiz from lesson text                                         |
+| `POST`   | `/explain-code`                 | Explain, debug, or optimize submitted code                                               |
+| `GET`    | `/status/{job_id}`              | Return generation status and generated asset metadata                                    |
+| `GET`    | `/transcript/{filename}`        | Return a generated transcript                                                            |
+| `POST`   | `/generate-syllabus`            | Generate a structured course syllabus                                                    |
+| `POST`   | `/generate-flashcards`          | Generate study flashcards from a lesson transcript                                       |
+| `GET`    | `/voices`                       | Return available narration voices                                                        |
+| `GET`    | `/video-stream/{filename}`      | Serve a local generated video when cloud delivery is unavailable                         |
+| `GET`    | `/transcript-stream/{filename}` | Serve a local transcript file                                                            |
+| `POST`   | `/talk`                         | Live conversation: streams the mentor's reply sentence by sentence as Server-Sent Events |
+| `GET`    | `/talk/status`                  | Report whether the voice and face workers are running                                    |
+| `GET`    | `/mentors`                      | List mentors with their voice type and preparation state                                 |
+| `POST`   | `/mentors`                      | Create a mentor from uploaded images and an optional voice recording                     |
+| `GET`    | `/mentors/{name}`               | Return one mentor's settings and photo names for editing                                 |
+| `PATCH`  | `/mentors/{name}`               | Edit an uploaded mentor: personality, delivery, standard voice, photos, voice recording  |
+| `GET`    | `/mentors/{name}/images/{file}` | Serve one of the mentor's photos                                                         |
+| `DELETE` | `/mentors/{name}`               | Remove a mentor that was created by upload                                               |
+| `GET`    | `/mentors/{name}/idle.mp4`      | Serve the mentor's idle clip                                                             |
+| `GET`    | `/app`                          | Basic live-conversation page                                                             |
 
 Use the running service's FastAPI documentation for the current request and response schemas.
 
@@ -163,12 +276,12 @@ curl "http://localhost:8000/voices?language=English&gender=Female"
 ## Generation workflow
 
 1. Validate the lesson request.
-2. Generate the lesson script with Gemini.
+2. Generate the lesson script with Gemini, in the mentor's personality when the pack defines one.
 3. Use Groq only when it is configured and the primary provider fails.
 4. Save the transcript text.
-5. Generate narration with Edge TTS.
+5. Generate narration: the mentor's cloned voice when the pack has a voice sample and the voice worker is running, otherwise Edge TTS.
 6. Attempt D-ID rendering when its configuration is available.
-7. Use the local FFmpeg renderer when D-ID is unavailable or fails.
+7. When D-ID is unavailable or fails, render the mentor's clips with lip-sync through the face worker. If that is unavailable too, join the clip library, or loop the single clip, with FFmpeg.
 8. Generate subtitle files.
 9. Upload video and subtitles to Cloudinary when the full Cloudinary configuration is available.
 10. Return asset metadata and remove temporary local media after successful cloud delivery.

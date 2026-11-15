@@ -13,10 +13,11 @@ const connection = {
 let videoQueue;
 let videoWorker;
 
-const processVideoJob = async (job) => {
+export const processVideoJob = async (job) => {
   await AIVideo.update({ status: "processing" }, { where: { id: job.data.aiVideoId } });
 
   const { courseTitle, lessonTitle, celebrity, userPreferences, aiVideoId } = job.data;
+  const { voice_id, speech_rate, speech_pitch } = job.data;
 
   const response = await fetch(`${AI_SERVICE_URL}/generate`, {
     method: "POST",
@@ -26,6 +27,9 @@ const processVideoJob = async (job) => {
       topic: lessonTitle,
       celebrity,
       preferences: userPreferences || null,
+      ...(voice_id && { voice_id }),
+      ...(speech_rate && { speech_rate }),
+      ...(speech_pitch && { speech_pitch }),
     }),
   });
 

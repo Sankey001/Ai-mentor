@@ -1,0 +1,19 @@
+# Live mentor preview:  GEMINI_API_KEY=your_key docker compose up --build
+# Then open http://localhost:5173/mentor
+services:
+  mentor:
+    build: .
+    image: ai-mentor
+    ports:
+      # Bound to this computer only: the AI service has no login of its own.
+      - "127.0.0.1:5173:5173"
+      - "127.0.0.1:8000:8000"
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    volumes:
+      - mentor-data:/data
+    restart: unless-stopped
+
+volumes:
+  mentor-data:

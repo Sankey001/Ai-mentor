@@ -24,6 +24,14 @@ DID_API_KEY = os.getenv("DID_API_KEY")
 DID_API_URL = os.getenv("DID_API_URL", "https://api.d-id.com")
 DID_SOURCE_URL = os.getenv("DID_SOURCE_URL")
 
+# Warm voice and face workers started by start_app.py. Empty disables a worker.
+VOICE_WORKER_URL = os.getenv("VOICE_WORKER_URL", "http://127.0.0.1:8101")
+FACE_WORKER_URL = os.getenv("FACE_WORKER_URL", "http://127.0.0.1:8102")
+
+# Optional: LivePortrait, which turns uploaded mentor images into moving clips.
+PORTRAIT_PYTHON = os.getenv("PORTRAIT_PYTHON", "")
+LIVEPORTRAIT_DIR = os.getenv("LIVEPORTRAIT_DIR", "")
+
 GROQ_ENABLED = bool(GROQ_API_KEY)
 
 CLOUDINARY_ENABLED = all([

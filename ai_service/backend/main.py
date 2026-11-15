@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from backend import security
 from backend.api.v1.router import api_v1_router
 from backend.job_shutdown import wait_for_jobs_to_finish
 from backend.services.job_tracker import (
@@ -23,9 +24,11 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 base_output_path = os.path.join(BASE_DIR, "outputs")
 video_output_path = os.path.join(base_output_path, "video")
 text_output_path = os.path.join(base_output_path, "text")
+talk_output_path = os.path.join(base_output_path, "talk")
 
 os.makedirs(video_output_path, exist_ok=True)
 os.makedirs(text_output_path, exist_ok=True)
+os.makedirs(talk_output_path, exist_ok=True)
 
 
 @asynccontextmanager
@@ -50,10 +53,12 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Only the website may call this service from a browser. Server-side callers
+    # such as the Node API send no Origin header and are not affected.
+    app.middleware("http")(security.guard)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=sorted(security.allowed_origins()),
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -68,6 +73,12 @@ def create_app() -> FastAPI:
         "/transcript-stream",
         StaticFiles(directory=text_output_path),
         name="transcript-stream",
+    )
+
+    app.mount(
+        "/talk-media",
+        StaticFiles(directory=talk_output_path),
+        name="talk-media",
     )
 
     # Include v1 API routes

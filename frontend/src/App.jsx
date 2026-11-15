@@ -26,6 +26,19 @@ const ReportPage = lazy(() => import("./pages/ReportPage"));
 const Success = lazy(() => import("./pages/Success"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 const DocumentationPage = lazy(() => import("./pages/Documentation/DocumentationPage"));
+const MentorClassroom = lazy(() => import("./pages/MentorClassroom"));
+const MentorStudio = lazy(() => import("./pages/MentorStudio"));
+const MentorPreviewLayout = lazy(() => import("./components/mentor/MentorPreviewLayout"));
+
+// Local preview: open the live mentor pages without signing in (set in .env, off by default).
+const MENTOR_PREVIEW = import.meta.env.VITE_MENTOR_PREVIEW === "true";
+const mentorRoutes = (
+  <>
+    <Route path="/mentor" element={<MentorClassroom />} />
+    <Route path="/mentor/:courseId" element={<MentorClassroom />} />
+    <Route path="/mentor-studio" element={<MentorStudio />} />
+  </>
+);
 
 import CompleteProfilePage from "./pages/CompleteProfilePage";
 import "./App.css";
@@ -74,6 +87,8 @@ const App = () => {
           <Route path="/reset-password/:token" element={<ResetPassword />} />
         </Route>
 
+        {MENTOR_PREVIEW && <Route element={<MentorPreviewLayout />}>{mentorRoutes}</Route>}
+
         {/* PUBLIC DOCUMENTATION */}
         <Route path="/documentation" element={<DocumentationPage />} />
 
@@ -95,6 +110,7 @@ const App = () => {
             <Route path="/watchedvideos" element={<WatchedVideos />} />
             <Route path="/learning/:id" element={<LearningPage />} />
             <Route path="/success" element={<Success />} />
+            {!MENTOR_PREVIEW && mentorRoutes}
           </Route>
 
           <Route path="/course-preview/:courseId" element={<CoursePreview />} />

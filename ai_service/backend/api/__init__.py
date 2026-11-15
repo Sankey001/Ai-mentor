@@ -39,21 +39,29 @@ from backend.services.job_tracker import (
     shutdown_failed_jobs,
 )
 from backend.services.lesson_pipeline import process_lesson, run_tracked_lesson
+from backend.services.media_workers import animate as animate_mentor
+from backend.services.media_workers import speak as speak_in_mentor_voice
+from backend.services.mentor_pack import get_mentor_profile, get_mentor_voice_sample
 from backend.services.media_processor import (
     VIDEO_HEIGHT,
     VIDEO_WIDTH,
     build_avatar_normalization_args,
+    build_clip_library_ffmpeg_args,
+    build_clip_sequence,
     build_fallback_ffmpeg_args,
     build_landscape_video_filter,
     check_ffmpeg,
     generate_tts,
     get_celebrity_video,
+    get_mentor_clips,
     probe_video_metadata,
     run_ffmpeg_command,
+    write_concat_list,
 )
 from backend.services.providers import manager as provider_manager
 from backend.services.providers.gemini_provider import gemini_client
 from backend.services.providers.groq_provider import groq_client
+from backend.utils.subtitles import get_audio_duration as get_media_duration
 from backend.utils.subtitles import write_subtitles
 
 generate_flashcards = provider_manager.generate_flashcards
@@ -85,9 +93,12 @@ __all__ = [
     "QuizResponse",
     "SyllabusRequest",
     "active_jobs",
+    "animate_mentor",
     "asyncio",
     "app",
     "build_avatar_normalization_args",
+    "build_clip_library_ffmpeg_args",
+    "build_clip_sequence",
     "build_fallback_ffmpeg_args",
     "build_landscape_video_filter",
     "check_ffmpeg",
@@ -106,6 +117,10 @@ __all__ = [
     "get_job_status",
     "get_voices",
     "get_celebrity_video",
+    "get_media_duration",
+    "get_mentor_clips",
+    "get_mentor_profile",
+    "get_mentor_voice_sample",
     "get_transcript_content",
     "groq_client",
     "init_job_processing",
@@ -121,7 +136,9 @@ __all__ = [
     "run_ffmpeg_command",
     "run_tracked_lesson",
     "shutdown_failed_jobs",
+    "speak_in_mentor_voice",
     "VIDEO_HEIGHT",
     "VIDEO_WIDTH",
+    "write_concat_list",
     "write_subtitles",
 ]

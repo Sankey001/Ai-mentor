@@ -19,7 +19,7 @@ from backend.services.job_tracker import (
     shutdown_failed_jobs,
     remove_failed_generation_cache,
 )
-from backend.services import media_processor
+from backend.services import media_processor, media_workers, mentor_pack
 from backend.services.providers import manager as provider_manager
 from backend.services.providers.validation import (
     ProviderGenerationError,
@@ -28,7 +28,7 @@ from backend.services.providers.validation import (
 import backend.avatar_service as avatar_module
 import backend.voices as voices
 from backend.utils.logging_utils import log_event, short_error
-from backend.utils.subtitles import write_subtitles
+from backend.utils.subtitles import get_audio_duration, write_subtitles
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -86,6 +86,7 @@ async def process_lesson(data: LessonRequest, base_filename: str) -> None:
     provider_used = "unknown"
     model_used = "unknown"
     audio_seconds = 0.0
+    voice_used = "unknown"
 
     # 1️⃣ Initialize job_status entry if not present
     if base_filename not in job_status:
@@ -151,14 +152,34 @@ async def process_lesson(data: LessonRequest, base_filename: str) -> None:
             if eff_os.path.exists(audio_path):
                 eff_os.remove(audio_path)
 
-            selected_voice = voices.get_voice(data.voice_id)
-            rate = data.speech_rate if data.speech_rate else "+0%"
-            pitch = data.speech_pitch if data.speech_pitch else "+0Hz"
-
-            tts_fn = _resolve_callable("generate_tts", media_processor.generate_tts)
-            await tts_fn(
-                script, audio_path, voice_id=selected_voice, rate=rate, pitch=pitch
+            selected_voice, rate, pitch = voices.resolve_mentor_voice(
+                data.celebrity,
+                data.voice_id,
+                data.speech_rate,
+                data.speech_pitch,
+                pack_voice=mentor_pack.get_mentor_stock_voice(data.celebrity),
             )
+
+            # The mentor's own cloned voice comes first, unless the learner chose a voice.
+            sample_fn = _resolve_callable(
+                "get_mentor_voice_sample", mentor_pack.get_mentor_voice_sample
+            )
+            profile_fn = _resolve_callable("get_mentor_profile", mentor_pack.get_mentor_profile)
+            speak_fn = _resolve_callable("speak_in_mentor_voice", media_workers.speak)
+            voice_sample = None if data.voice_id else sample_fn(data.celebrity)
+            if voice_sample and await speak_fn(
+                script,
+                voice_sample,
+                audio_path,
+                expressiveness=profile_fn(data.celebrity)["expressiveness"],
+            ):
+                voice_used = "cloned"
+            else:
+                voice_used = selected_voice
+                tts_fn = _resolve_callable("generate_tts", media_processor.generate_tts)
+                await tts_fn(
+                    script, audio_path, voice_id=selected_voice, rate=rate, pitch=pitch
+                )
 
             try:
                 audio = mp3_class(audio_path)
@@ -251,59 +272,22 @@ async def process_lesson(data: LessonRequest, base_filename: str) -> None:
             )
             log_event("RUN", "Starting FFmpeg fallback renderer")
 
-            # 6️⃣ Fallback: Merge Stock Video + Audio (FFmpeg)
-            celeb_video_fn = _resolve_callable(
-                "get_celebrity_video", media_processor.get_celebrity_video
-            )
-            input_video = celeb_video_fn(data.celebrity)
+            clips_fn = _resolve_callable("get_mentor_clips", media_processor.get_mentor_clips)
+            try:
+                mentor_clips = clips_fn(data.celebrity)
+            except Exception as clip_error:
+                mentor_clips = []
+                log_event("WARN", "Clip library unavailable", error=short_error(clip_error))
 
-            if not eff_os.path.exists(input_video):
-                log_event(
-                    "ERROR",
-                    "Fallback source video not found",
-                    file=os.path.basename(input_video),
+            if await _render_lipsync(mentor_clips, audio_path, final_video, video_dir, base_filename):
+                renderer_used = "lipsync"
+            else:
+                renderer_used, failure_code = await _render_from_clips(
+                    data, mentor_clips, audio_path, audio_seconds, final_video, video_dir, base_filename
                 )
-                mark_job_failed(
-                    base_filename,
-                    failure_code="source_video_missing",
-                )
-                return
-
-            log_event("RUN", "Rendering lesson video with FFmpeg")
-
-            fallback_args_fn = _resolve_callable(
-                "build_fallback_ffmpeg_args",
-                media_processor.build_fallback_ffmpeg_args,
-            )
-            ffmpeg_args = fallback_args_fn(input_video, audio_path, final_video)
-
-            run_ffmpeg_fn = _resolve_callable(
-                "run_ffmpeg_command", media_processor.run_ffmpeg_command
-            )
-            ffmpeg_returncode, error_msg = await run_ffmpeg_fn(ffmpeg_args)
-            if ffmpeg_returncode != 0:
-                error_msg = error_msg or "FFmpeg exited without diagnostic output"
-                log_event(
-                    "ERROR",
-                    "FFmpeg render failed",
-                    code=ffmpeg_returncode,
-                    error=short_error(RuntimeError(error_msg)),
-                )
-                mark_job_failed(
-                    base_filename,
-                    failure_code="ffmpeg_failed",
-                )
-                return
-
-            if not eff_os.path.exists(final_video):
-                log_event("ERROR", "FFmpeg completed without an output video")
-                mark_job_failed(
-                    base_filename,
-                    failure_code="output_missing",
-                )
-                return
-
-            log_event("OK", "FFmpeg video render completed")
+                if failure_code:
+                    mark_job_failed(base_filename, failure_code=failure_code)
+                    return
 
         # 6.5 Generate subtitles (.vtt + .srt)
         vtt_path, srt_path = None, None
@@ -409,6 +393,7 @@ async def process_lesson(data: LessonRequest, base_filename: str) -> None:
                 meta["audio_seconds"] = audio_seconds
                 meta["word_count"] = len(script.split())
                 meta["renderer"] = renderer_used
+                meta["voice"] = voice_used
                 meta["media"] = media_metadata
                 timestamps["completed_at"] = datetime.datetime.now(
                     datetime.timezone.utc
@@ -464,3 +449,100 @@ async def process_lesson(data: LessonRequest, base_filename: str) -> None:
             ),
         )
         log_event("ERROR", "Lesson generation failed", job=base_filename, error=short_error(e))
+
+
+async def _render_lipsync(
+    mentor_clips: list[str], audio_path: str, final_video: str, video_dir: str, base_filename: str
+) -> bool:
+    """Render the mentor's clips with a moving mouth via the face worker."""
+    if not mentor_clips:
+        return False
+    animate_fn = _resolve_callable("animate_mentor", media_workers.animate)
+    talking_video = os.path.join(video_dir, f"{base_filename}.talking.mp4")
+    if not await animate_fn(mentor_clips, audio_path, talking_video):
+        return False
+
+    run_ffmpeg_fn = _resolve_callable("run_ffmpeg_command", media_processor.run_ffmpeg_command)
+    returncode, error_msg = await run_ffmpeg_fn(
+        media_processor.build_avatar_normalization_args(talking_video, final_video)
+    )
+    if os.path.exists(talking_video):
+        os.remove(talking_video)
+    if returncode != 0 or not os.path.exists(final_video):
+        log_event("WARN", "Lip-synced video normalization failed", error=(error_msg or "")[-200:])
+        return False
+    log_event("OK", "Lip-synced mentor video ready")
+    return True
+
+
+async def _render_from_clips(
+    data: LessonRequest,
+    mentor_clips: list[str],
+    audio_path: str,
+    audio_seconds: float,
+    final_video: str,
+    video_dir: str,
+    base_filename: str,
+) -> tuple[str, str | None]:
+    """Join the mentor's clips (or loop one clip) under the narration.
+
+    Returns (renderer, failure_code); failure_code is None on success.
+    """
+    eff_os = _resolve_os()
+    renderer_used = "ffmpeg_fallback"
+    input_video = _resolve_callable(
+        "get_celebrity_video", media_processor.get_celebrity_video
+    )(data.celebrity)
+
+    concat_list = None
+    if mentor_clips:
+        try:
+            duration_fn = _resolve_callable("get_media_duration", get_audio_duration)
+            sequence = media_processor.build_clip_sequence(
+                [(clip, duration_fn(clip)) for clip in mentor_clips],
+                audio_seconds,
+                seed=base_filename,
+            )
+            concat_list = os.path.join(video_dir, f"{base_filename}.clips.txt")
+            media_processor.write_concat_list(sequence, concat_list)
+            renderer_used = "clips"
+            log_event("INFO", "Clip library selected", clips=len(mentor_clips))
+        except Exception as clip_error:
+            concat_list = None
+            log_event(
+                "WARN", "Clip library unavailable; using single clip", error=short_error(clip_error)
+            )
+
+    if not concat_list and not eff_os.path.exists(input_video):
+        log_event("ERROR", "Fallback source video not found", file=os.path.basename(input_video))
+        return renderer_used, "source_video_missing"
+
+    log_event("RUN", "Rendering lesson video with FFmpeg")
+    if concat_list:
+        ffmpeg_args = media_processor.build_clip_library_ffmpeg_args(
+            concat_list, audio_path, final_video, duration_seconds=audio_seconds
+        )
+    else:
+        ffmpeg_args = _resolve_callable(
+            "build_fallback_ffmpeg_args", media_processor.build_fallback_ffmpeg_args
+        )(input_video, audio_path, final_video)
+
+    run_ffmpeg_fn = _resolve_callable("run_ffmpeg_command", media_processor.run_ffmpeg_command)
+    ffmpeg_returncode, error_msg = await run_ffmpeg_fn(ffmpeg_args)
+    if concat_list and os.path.exists(concat_list):
+        os.remove(concat_list)
+    if ffmpeg_returncode != 0:
+        error_msg = error_msg or "FFmpeg exited without diagnostic output"
+        log_event(
+            "ERROR",
+            "FFmpeg render failed",
+            code=ffmpeg_returncode,
+            error=short_error(RuntimeError(error_msg)),
+        )
+        return renderer_used, "ffmpeg_failed"
+    if not eff_os.path.exists(final_video):
+        log_event("ERROR", "FFmpeg completed without an output video")
+        return renderer_used, "output_missing"
+
+    log_event("OK", "FFmpeg video render completed")
+    return renderer_used, None

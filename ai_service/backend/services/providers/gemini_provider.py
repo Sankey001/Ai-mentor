@@ -19,6 +19,7 @@ from backend.schemas.lessons import (
 )
 from backend.services.providers.base import (
     UNTRUSTED_INPUT_INSTRUCTION,
+    mentor_persona_instruction,
     BaseAIProvider,
     serialize_user_data,
 )
@@ -80,6 +81,8 @@ class GeminiProvider(BaseAIProvider):
         pace, example type, and focus area to the supplied preferences when present.
         The requested narration inspiration may guide high-level delivery only;
         do not claim to be the named person. Return only the explanation.
+
+        {mentor_persona_instruction(data.celebrity)}
         """
         user_data = {
             "course": data.course,

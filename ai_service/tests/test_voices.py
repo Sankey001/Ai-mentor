@@ -98,3 +98,43 @@ def test_voices_endpoint_exposes_optional_query_parameters():
     params = {p["name"]: p for p in api.app.openapi()["paths"]["/voices"]["get"]["parameters"]}
     assert set(params) == {"language", "gender"}
     assert all(p["in"] == "query" and not p.get("required") for p in params.values())
+
+
+def test_mentor_speaks_in_their_own_voice_by_default():
+    for mentor, expected in voices.MENTOR_VOICES.items():
+        assert expected["voice_id"] in voices.VOICE_REGISTRY
+        assert voices.resolve_mentor_voice(mentor.upper(), None, None, None) == (
+            expected["voice_id"],
+            expected["rate"],
+            expected["pitch"],
+        )
+
+
+def test_neutral_rate_and_pitch_count_as_not_chosen():
+    mentor = next(iter(voices.MENTOR_VOICES))
+    expected = voices.MENTOR_VOICES[mentor]
+    assert voices.resolve_mentor_voice(mentor, "", "+0%", "+0Hz") == (
+        expected["voice_id"],
+        expected["rate"],
+        expected["pitch"],
+    )
+
+
+def test_learner_choice_overrides_the_mentor_voice():
+    mentor = next(iter(voices.MENTOR_VOICES))
+    assert voices.resolve_mentor_voice(mentor, "en-GB-SoniaNeural", "+10%", "-5Hz") == (
+        "en-GB-SoniaNeural",
+        "+10%",
+        "-5Hz",
+    )
+
+
+def test_unknown_mentor_or_voice_uses_the_default_voice():
+    assert voices.resolve_mentor_voice("nobody", None, None, None) == (
+        voices.DEFAULT_VOICE_ID,
+        "+0%",
+        "+0Hz",
+    )
+    assert voices.resolve_mentor_voice("nobody", "not-a-voice", "+0%", "+0Hz")[0] == (
+        voices.DEFAULT_VOICE_ID
+    )
