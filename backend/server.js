@@ -1,0 +1,223 @@
+import express from "express";
+import http from "node:http";
+import dotenv from "dotenv";
+import cors from "cors";
+import path from "path";
+import { fileURLToPath } from "url";
+import healthRoutes from "./routes/healthRoutes.js";
+
+import { connectDB, sequelize } from "./config/db.js";
+import { createGracefulShutdown } from "./gracefulShutdown.js";
+
+// ================= ROUTES =================
+import authRoutes from "./routes/auth.js";
+import userRoutes from "./routes/userRoutes.js";
+import courseRoutes from "./routes/courseRoutes.js";
+import analyticsRoutes from "./routes/analyticsRoutes.js";
+import sidebarRoutes from "./routes/sidebarRoutes.js";
+import aiRoutes from "./routes/aiRoutes.js";
+import flashcardRoutes from "./routes/flashcardRoutes.js";
+import communityRoutes from "./routes/communityRoutes.js";
+import notificationRoutes from "./routes/notificationRoutes.js";
+import adminRoutes from "./routes/adminRoutes.js";
+import certificateRoutes from "./routes/certificateRoutes.js";
+import paymentRoutes from "./routes/payment.js";
+import razorpayRoutes from "./routes/razorpay.js";
+import webhookRoutes from "./routes/webhook.js";
+import preferenceRoutes from "./routes/preferenceRoutes.js";
+import contactUsRoutes from "./routes/contactus.js";
+import reportRoutes from "./routes/reportRoutes.js";
+import docsRoutes from "./routes/docsRoutes.js";
+import chatRoutes from "./routes/chatRoutes.js";
+import assistantRoutes from "./routes/assistantRoutes.js";
+import CalendarTaskRoutes from "./routes/CalendarTaskRoutes.js";
+
+// ================= MODELS =================
+import "./models/CommunityPost.js";
+import "./models/Notification.js";
+import "./models/Report.js";
+import "./models/modelAssociations.js";
+import "./models/Contactmessage.js";
+
+dotenv.config();
+
+import { validateEnv } from "./env-validator.js";
+import { securityHeaders } from "./config/securityHeaders.js";
+import requestContext from "./middleware/requestContext.js";
+import { errorHandler } from "./middleware/errorMiddleware.js";
+
+import { startTokenCleanup } from "./jobs/tokenCleanup.js";
+validateEnv();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+
+// ================= SECURE CORS =================
+const envOrigins = process.env.FRONTEND_URL
+  ? process.env.FRONTEND_URL.split(",").map((origin) => origin.trim())
+  : [];
+
+const defaultDevOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://localhost:5174",
+  "http://127.0.0.1:5174",
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+];
+
+const allowedOrigins = Array.from(new Set([...envOrigins, ...defaultDevOrigins]));
+
+// Request ID first, so every response and log line has one.
+app.use(requestContext);
+
+app.use(securityHeaders());
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests without origin (Postman, mobile apps, curl).
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      // Allow localhost/127.0.0.1 origins in development.
+      if (process.env.NODE_ENV !== "production") {
+        if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+          return callback(null, true);
+        }
+      }
+
+      console.warn("Blocked by CORS");
+      const corsError = new Error("Not allowed by CORS");
+      corsError.status = 403;
+      corsError.expose = true;
+
+      return callback(corsError);
+    },
+    credentials: true,
+  }),
+);
+
+// ================= STRIPE WEBHOOK =================
+// These routes must be before express.json().
+app.use("/api/stripe", webhookRoutes);
+app.use("/api/payment", webhookRoutes);
+
+// ================= MIDDLEWARE =================
+app.use(express.json({ limit: "100kb" }));
+
+// ================= STATIC FILES =================
+app.use("/videos", express.static(path.join(__dirname, "videos")));
+app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
+
+// ================= HEALTH CHECK =================
+app.get("/", (req, res) => {
+  res.send("✅ API is running...");
+});
+
+app.use("/health", healthRoutes);
+
+// ================= API ROUTES =================
+app.use("/api/auth", authRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/courses", courseRoutes);
+app.use("/api/payment", paymentRoutes);
+app.use("/api/payment/razorpay", razorpayRoutes);
+app.use("/api/analytics", analyticsRoutes);
+app.use("/api/sidebar", sidebarRoutes);
+app.use("/api/ai", aiRoutes);
+app.use("/api/flashcards", flashcardRoutes);
+app.use("/api/community", communityRoutes);
+app.use("/api/notifications", notificationRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/certificate", certificateRoutes);
+app.use("/api/preferences", preferenceRoutes);
+app.use("/api/contactus", contactUsRoutes);
+app.use("/api/course-reports", reportRoutes);
+app.use("/api/docs", docsRoutes);
+app.use("/api/chat", chatRoutes);
+app.use("/api/assistant", assistantRoutes);
+app.use("/api/calendar", CalendarTaskRoutes);
+
+// ================= 404 HANDLER =================
+app.use((req, res) => {
+  return res.status(404).json({
+    success: false,
+    message: "Route not found",
+    requestId: req.id,
+  });
+});
+
+// ================= GLOBAL ERROR HANDLER (must be last) =================
+app.use(errorHandler);
+
+// ================= SERVER START =================
+const PORT = process.env.PORT || 5000;
+
+const SHUTDOWN_TIMEOUT = 10_000;
+let server;
+const shutdown = createGracefulShutdown({
+  getServer: () => server,
+  database: sequelize,
+  timeoutMs: SHUTDOWN_TIMEOUT,
+});
+process.once("SIGTERM", () => {
+  void shutdown("SIGTERM");
+});
+process.once("SIGINT", () => {
+  void shutdown("SIGINT");
+});
+
+const startServer = async () => {
+  try {
+    console.log("[STARTING] Backend startup");
+    console.log("[CHECK] Connecting to database...");
+
+    await connectDB();
+
+    console.log("[OK] Database connected");
+
+    const isDevelopment = process.env.NODE_ENV !== "production";
+    const syncOptions = isDevelopment ? { alter: true } : {};
+
+    await sequelize.sync(syncOptions);
+
+    console.log(
+      isDevelopment
+        ? "[OK] Database schema synchronized (development auto-alter enabled)"
+        : "[OK] Database schema synchronized",
+    );
+
+    server = http.createServer(app);
+
+    server.requestTimeout = 120_000;
+    server.headersTimeout = 65_000;
+    server.keepAliveTimeout = 60_000;
+    server.on("error", () => {
+      console.error("[FAILED] Backend HTTP server error.");
+      process.exitCode = 1;
+    });
+    startTokenCleanup();
+    server.listen(PORT, () => {
+      console.log(`[READY] Backend: http://localhost:${PORT}`);
+      console.log(`[INFO] Allowed frontend origins: ${allowedOrigins.join(", ")}`);
+      console.log("[INFO] Keep this terminal open. Press Ctrl+C to stop the backend.");
+    });
+  } catch {
+    console.error("[FAILED] Backend startup failed:");
+    process.exit(1);
+  }
+};
+
+if (process.env.NODE_ENV !== "test") {
+  startServer();
+}
+
+export default app;

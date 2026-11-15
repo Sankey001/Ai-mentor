@@ -1,0 +1,122 @@
+import { jwtDecode } from "jwt-decode";
+import { useMemo, useState, useEffect } from "react";
+import { Navigate, useLocation } from "react-router-dom";
+import Header from "./components/Header";
+import AdminSidebar from "./components/layout/AdminSidebar";
+import Toast from "./components/Toast";
+import { PAGE_TITLES } from "./constants/adminNavigation";
+import { ToastProvider } from "./context/ToastContext";
+import CoursesPage from "./pages/CoursesPage";
+import DashboardPage from "./pages/DashboardPage";
+import DiscussionsPage from "./pages/DiscussionsPage";
+import EnrollmentsPage from "./pages/EnrollmentsPage";
+import LoginPage from "./pages/LoginPage";
+import PaymentsPage from "./pages/PaymentsPage";
+import UsersPage from "./pages/UsersPage";
+import ReportsPage from "./pages/ReportsPage";
+import ProfilePage from "./pages/ProfilePage";
+import SettingsPage from "./pages/SettingsPage";
+import NotFoundPage from "./pages/NotFoundPage";
+
+const PAGE_COMPONENTS = {
+  dashboard: DashboardPage,
+  courses: CoursesPage,
+  users: UsersPage,
+  enrollments: EnrollmentsPage,
+  payments: PaymentsPage,
+  reports: ReportsPage,
+  profile: ProfilePage,
+  settings: SettingsPage,
+  discussions: DiscussionsPage,
+};
+
+function App() {
+  const location = useLocation();
+  const token = localStorage.getItem("token");
+
+  let isAuthenticated = false;
+
+  try {
+    if (token) {
+      const decoded = jwtDecode(token);
+
+      const now = Date.now() / 1000;
+
+      const notExpired = decoded.exp && decoded.exp > now;
+      const isAdmin = decoded.role === "admin" || decoded.role === "superadmin";
+
+      isAuthenticated = notExpired && isAdmin;
+    }
+  } catch {
+    isAuthenticated = false;
+  }
+  const [page, setPage] = useState("courses");
+  const [mobileNav, setMobileNav] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [isNotFound, setIsNotFound] = useState(false);
+
+  useEffect(() => {
+    const pathName = location.pathname.replace("/", "");
+    if (pathName === "" || pathName === "dashboard") {
+      setPage("dashboard");
+      setIsNotFound(false);
+    } else if (PAGE_COMPONENTS[pathName]) {
+      setPage(pathName);
+      setIsNotFound(false);
+    } else {
+      setIsNotFound(true); // ✅ 404!
+    }
+  }, [location.pathname]);
+
+  const title = useMemo(() => PAGE_TITLES[page] ?? PAGE_TITLES.dashboard, [page]);
+  const CurrentPage = PAGE_COMPONENTS[page];
+  const isLoginRoute = location.pathname === "/login";
+
+  if (isLoginRoute) {
+    return <LoginPage />;
+  }
+
+  if (!isAuthenticated) {
+    localStorage.removeItem("token");
+    return <Navigate to="/login" replace />;
+  }
+
+  if (isNotFound) {
+    return (
+      <ToastProvider>
+        <NotFoundPage />
+        <Toast />
+      </ToastProvider>
+    );
+  }
+
+  return (
+    <ToastProvider>
+      <div className="min-h-screen bg-canvas-alt text-main">
+        <AdminSidebar
+          page={page}
+          onPageChange={setPage}
+          mobileOpen={mobileNav}
+          onMobileClose={() => setMobileNav(false)}
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={() => setSidebarCollapsed((prev) => !prev)}
+        />
+
+        <main
+          className={`min-h-screen transition-all duration-300 ${sidebarCollapsed ? "lg:ml-24" : "lg:ml-80"}`}
+        >
+          <Header title={title} onMenuClick={() => setMobileNav(true)} />
+
+          <section className="p-4 md:p-8">
+            <div className="rounded-2xl bg-card border border-border overflow-hidden shadow-[0_2px_8px_rgba(26,26,26,0.06)]">
+              {CurrentPage ? <CurrentPage /> : <DashboardPage />}
+            </div>
+          </section>
+        </main>
+      </div>
+      <Toast />
+    </ToastProvider>
+  );
+}
+
+export default App;

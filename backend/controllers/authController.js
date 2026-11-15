@@ -1,0 +1,460 @@
+import crypto from "crypto";
+import User from "../models/User.js";
+import jwt from "jsonwebtoken";
+import { Op } from "sequelize";
+import { ensureProfileCompleteness, formatFullName } from "../utils/userUtils.js";
+import admin from "firebase-admin";
+import { authServices } from "../services/authExternalServices.js";
+import {
+  AppError,
+  BadRequestError,
+  ConflictError,
+  UnauthorizedError,
+  ForbiddenError,
+  forwardError,
+} from "../utils/error.js";
+
+// Initialize Firebase Admin only outside tests and only when real keys are provided.
+if (process.env.NODE_ENV !== "test") {
+  if (
+    !admin.apps.length &&
+    process.env.FIREBASE_PRIVATE_KEY &&
+    process.env.FIREBASE_PRIVATE_KEY.length > 50
+  ) {
+    try {
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+        }),
+      });
+      console.log("🔥 Firebase initialized successfully");
+    } catch {
+      console.warn("⚠️ Firebase failed to initialize. Google Login will not work.");
+    }
+  } else {
+    console.warn("⚠️ No valid Firebase keys found in .env. Skipping Firebase init.");
+  }
+}
+
+const generateToken = (id) => {
+  return jwt.sign({ id }, process.env.JWT_SECRET, {
+    expiresIn: "30d",
+  });
+};
+
+// Centralized logic moved to userUtils.js
+const register = async (req, res, next) => {
+  const { firstName, lastName, name, email, password } = req.body;
+
+  try {
+    const userExists = await User.findOne({ where: { email } });
+    if (userExists) {
+      return forwardError(next, res, new ConflictError("User already exists"));
+    }
+
+    const fullName = formatFullName(firstName, lastName) || name;
+    const user = await User.create({
+      firstName,
+      lastName,
+      name: fullName,
+      email,
+      password,
+    });
+
+    await ensureProfileCompleteness(user);
+    res.status(201).json({
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      bio: user.bio,
+      avatar_url: user.avatar_url,
+      isProfileComplete: user.isProfileComplete,
+      googleId: user.googleId,
+      hasPassword: !!user.password,
+      purchasedCourses: user.purchasedCourses,
+      isNewUser: true,
+      token: generateToken(user.id),
+    });
+  } catch (error) {
+    console.error("Register Error:", error);
+    return forwardError(
+      next,
+      res,
+      new AppError(
+        "Internal Server Error",
+        500,
+        "INTERNAL_SERVER_ERROR",
+        [],
+        error?.message || "Unknown registration error",
+      ),
+    );
+  }
+};
+
+const login = async (req, res, next) => {
+  const { email, password } = req.body;
+
+  try {
+    const user = await User.findOne({ where: { email } });
+
+    if (!user) {
+      return forwardError(next, res, new UnauthorizedError("Invalid email or password"));
+    }
+
+    const isMatch = await user.matchPassword(password);
+
+    if (user.isBlocked) {
+      return forwardError(next, res, new ForbiddenError("Account suspended"));
+    }
+
+    if (user && user.password && isMatch) {
+      await ensureProfileCompleteness(user);
+      res.json({
+        id: user.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        bio: user.bio,
+        avatar_url: user.avatar_url,
+        isProfileComplete: user.isProfileComplete,
+        googleId: user.googleId,
+        hasPassword: !!user.password,
+        purchasedCourses: user.purchasedCourses,
+        isNewUser: false,
+        token: generateToken(user.id),
+      });
+
+      import("../controllers/notificationController.js")
+        .then(({ createNotification }) => {
+          createNotification(user.id, {
+            title: "New Login Detected",
+            message: `A new login was detected for your account at ${new Date().toLocaleString()}.`,
+            type: "security",
+          });
+        })
+        .catch((error) => {
+          console.error("Failed to load notificationController or send login notification:", error);
+        });
+    } else {
+      return forwardError(next, res, new UnauthorizedError("Invalid email or password"));
+    }
+  } catch (error) {
+    console.error("Login Error:", error);
+    return forwardError(
+      next,
+      res,
+      new AppError(
+        "Internal Server Error",
+        500,
+        "INTERNAL_SERVER_ERROR",
+        [],
+        error?.message || "Unknown login error",
+      ),
+    );
+  }
+};
+
+// Background task to refresh/re-host avatar to Cloudinary without blocking login
+const refreshAvatarInBackground = async (userId, googlePictureUrl) => {
+  try {
+    const user = await User.findByPk(userId);
+    if (!user) {
+      console.warn(`Skipping background avatar refresh because user ${userId} was not found`);
+      return;
+    }
+
+    const result = await authServices.uploadAvatar(googlePictureUrl, {
+      folder: "user_avatars",
+      public_id: `user_${userId}`,
+      overwrite: true,
+    });
+
+    user.avatar_url = result.secure_url;
+    await user.save();
+    await ensureProfileCompleteness(user);
+  } catch (err) {
+    console.error("Background avatar refresh failed:", err);
+  }
+};
+
+const googleLogin = async (req, res, next) => {
+  try {
+    const { idToken } = req.body;
+
+    // ✅ SECURE: Verify Firebase ID token using Firebase Admin SDK.
+    // Validates signature, expiry, project (aud), and issuer automatically.
+    let decodedToken;
+    try {
+      decodedToken = await authServices.verifyGoogleIdToken(idToken);
+    } catch (verifyError) {
+      console.error("Google token verification failed:", verifyError.message);
+      return forwardError(next, res, new UnauthorizedError("Invalid Google token"));
+    }
+
+    if (!decodedToken.email_verified) {
+      return forwardError(next, res, new UnauthorizedError("Google email not verified"));
+    }
+
+    const uid = decodedToken.uid;
+    const email = decodedToken.email;
+    const name = decodedToken.name || email.split("@")[0];
+    let firstName = decodedToken.given_name || decodedToken.name?.split(" ")[0] || "";
+    let lastName =
+      decodedToken.family_name || decodedToken.name?.split(" ").slice(1).join(" ") || "";
+    const avatar_url = decodedToken.picture || null;
+
+    // Fallback if given_name and family_name are missing
+    if (!firstName && !lastName && name) {
+      const nameParts = name.trim().split(/\s+/);
+      firstName = nameParts[0] || "";
+      lastName = nameParts.slice(1).join(" ") || "";
+    }
+    const fullName = formatFullName(firstName, lastName);
+
+    let user = await User.findOne({ where: { email } });
+    let isNewUser = false;
+
+    if (!user) {
+      isNewUser = true;
+      user = await User.create({
+        name: fullName,
+        email,
+        firstName,
+        lastName,
+        avatar_url,
+        googleId: uid,
+        role: "user",
+      });
+    } else {
+      if (user.isBlocked) {
+        return forwardError(next, res, new ForbiddenError("Account suspended"));
+      }
+
+      let changed = false;
+
+      if (!user.firstName && firstName) {
+        user.firstName = firstName;
+        changed = true;
+      }
+      if (!user.lastName && lastName) {
+        user.lastName = lastName;
+        changed = true;
+      }
+      if (!user.avatar_url && avatar_url) {
+        user.avatar_url = avatar_url;
+        changed = true;
+      }
+
+      if (changed) {
+        user.name = formatFullName(user.firstName, user.lastName);
+        await user.save();
+      }
+    }
+
+    await ensureProfileCompleteness(user);
+
+    // 🔥 OPTIMIZATION: Flicker-Free Avatar Re-hosting
+    if (avatar_url) {
+      const isCurrentlyGoogleHosted = user.avatar_url?.includes("googleusercontent.com");
+      const isMissing = !user.avatar_url;
+
+      if (isNewUser) {
+        try {
+          const result = await authServices.uploadAvatar(avatar_url, {
+            folder: "user_avatars",
+            public_id: `user_${user.id}`,
+            overwrite: true,
+          });
+          user.avatar_url = result.secure_url;
+          await user.save();
+        } catch (err) {
+          console.error("Sync avatar re-hosting failed:", err);
+        }
+      } else if (isCurrentlyGoogleHosted || isMissing) {
+        refreshAvatarInBackground(user.id, avatar_url);
+      }
+    }
+
+    const token = generateToken(user.id);
+
+    res.json({
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      bio: user.bio,
+      avatar_url: user.avatar_url,
+      isProfileComplete: user.isProfileComplete,
+      googleId: user.googleId,
+      hasPassword: !!user.password,
+      purchasedCourses: user.purchasedCourses,
+      isNewUser,
+      token,
+    });
+  } catch (error) {
+    console.error("Google login error:", error);
+    return forwardError(
+      next,
+      res,
+      new AppError(
+        "Internal Server Error",
+        500,
+        "INTERNAL_SERVER_ERROR",
+        [],
+        error?.message || "Google login failed",
+      ),
+    );
+  }
+};
+
+const forgotPassword = async (req, res, next) => {
+  const { email } = req.body;
+
+  // Identical response whether or not the account exists (prevents user enumeration)
+  const genericResponse = {
+    message: "If an account exists for this email, a reset link has been sent.",
+  };
+
+  try {
+    const user = await User.findOne({ where: { email } });
+
+    if (!user) {
+      return res.status(200).json(genericResponse);
+    }
+    // Keep active token and avoid spamming inbox if requested within 60s
+    const RESET_EXPIRY_MS = 3600000; // 1 hour token validity
+    const COOLDOWN_MS = 60 * 1000; // 60 seconds cooldown window
+    if (
+      user.resetPasswordToken &&
+      user.resetPasswordExpires &&
+      new Date(user.resetPasswordExpires).getTime() - Date.now() > RESET_EXPIRY_MS - COOLDOWN_MS
+    ) {
+      return res.status(200).json(genericResponse);
+    }
+
+    const resetToken = crypto.randomBytes(20).toString("hex");
+
+    user.resetPasswordToken = crypto.createHash("sha256").update(resetToken).digest("hex");
+
+    user.resetPasswordExpires = Date.now() + 3600000;
+
+    await user.save();
+
+    const resetUrl = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
+
+    const message = `You are receiving this email because you (or someone else) has requested the reset of a password. Please make a POST request to: \n\n ${resetUrl}`;
+
+    const html = `
+      <h1>Password Reset Request</h1>
+      <p>You are receiving this email because you (or someone else) has requested the reset of a password for your account.</p>
+      <p>Please click on the link below to reset your password:</p>
+      <a href="${resetUrl}" clicktracking=off>${resetUrl}</a>
+      <p>If you did not request this, please ignore this email and your password will remain unchanged.</p>
+    `;
+
+    try {
+      await authServices.sendEmail({
+        email: user.email,
+        subject: "Password Reset Token",
+        message,
+        html,
+      });
+
+      res.status(200).json(genericResponse);
+    } catch {
+      console.error("Email could not be sent");
+      user.resetPasswordToken = null;
+      user.resetPasswordExpires = null;
+      await user.save();
+      return forwardError(
+        next,
+        res,
+        new AppError(
+          "Internal Server Error",
+          500,
+          "INTERNAL_SERVER_ERROR",
+          [],
+          "Email could not be sent",
+        ),
+      );
+    }
+  } catch (error) {
+    console.error("Forgot Password Error:", error);
+    return forwardError(
+      next,
+      res,
+      new AppError(
+        "Internal Server Error",
+        500,
+        "INTERNAL_SERVER_ERROR",
+        [],
+        error?.message || "Forgot password failed",
+      ),
+    );
+  }
+};
+
+const resetPassword = async (req, res, next) => {
+  const { password } = req.body;
+
+  try {
+    const hashedToken = crypto.createHash("sha256").update(req.params.token).digest("hex");
+
+    const user = await User.findOne({
+      where: {
+        resetPasswordToken: hashedToken,
+        resetPasswordExpires: { [Op.gt]: Date.now() },
+      },
+    });
+
+    if (!user) {
+      return forwardError(next, res, new BadRequestError("Invalid or expired token"));
+    }
+
+    user.set("password", password);
+    user.resetPasswordToken = null;
+    user.resetPasswordExpires = null;
+    user.passwordChangedAt = Date.now();
+
+    await user.save();
+
+    import("../controllers/notificationController.js")
+      .then(({ createNotification }) => {
+        createNotification(user.id, {
+          title: "Password Changed",
+          message:
+            "Your password has been successfully reset. If this wasn't you, please secure your account.",
+          type: "security",
+        });
+      })
+      .catch((error) => {
+        console.error("Password reset notification error:", error);
+      });
+
+    res.status(200).json({ message: "Password updated successfully" });
+  } catch (error) {
+    console.error("Reset Password Error:", error);
+    return forwardError(
+      next,
+      res,
+      new AppError(
+        "Internal Server Error",
+        500,
+        "INTERNAL_SERVER_ERROR",
+        [],
+        error?.message || "Reset password failed",
+      ),
+    );
+  }
+};
+
+export { register, login, googleLogin, forgotPassword, resetPassword };

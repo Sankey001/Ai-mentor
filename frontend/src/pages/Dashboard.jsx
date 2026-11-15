@@ -1,0 +1,549 @@
+import { apiFetch } from "../lib/api";
+import React, { useEffect, useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
+import ContinueLearningCard from "../components/dashboard/ContinueLearningCard";
+import {
+  ArrowRight,
+  Award,
+  BookOpen,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
+  GraduationCap,
+  Play,
+  Sparkles,
+} from "lucide-react";
+import Preferences from "../components/Preferences";
+import FloatingAssistant from "../components/common/FloatingAssistant";
+import LoadingSpinner from "../components/common/LoadingSpinner";
+import CourseCardMeta from "../components/common/CourseCardMeta";
+import LearningActivityCard from "../components/dashboard/LearningActivityCard";
+import MeetAiMentorCard from "../components/dashboard/MeetAiMentorCard";
+import TodaysLearningPlan from "../components/dashboard/TodaysLearningPlan";
+import RecentActivityCard from "../components/dashboard/RecentActivityCard";
+import QuickActions from "../components/dashboard/QuickActions";
+import DashboardHero from "../components/DashboardHero";
+import AILessonBanner from "../components/AILessonBanner";
+import UpcomingLiveSession from "../components/UpcomingLiveSession";
+import RecommendedForYou from "../components/RecommendedForYou";
+import { Helmet } from "react-helmet-async";
+import toast from "react-hot-toast";
+
+const BLUE_BUTTON =
+  "inline-flex items-center justify-center gap-2 rounded-xl bg-[#3867D6] px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-blue-600/20 transition hover:-translate-y-0.5 hover:bg-[#315BC0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3867D6] focus-visible:ring-offset-2";
+
+const artworkFor = (title = "") => {
+  const artwork = {
+    "React Fundamentals": "/AI_Tutor_New_UI/Dashboard/react_fundamentals.png",
+    "Python For AI": "/AI_Tutor_New_UI/Dashboard/python_for_ai.png",
+    "AI Ethics & Bias": "/AI_Tutor_New_UI/Dashboard/ai_ethics_bias.png",
+    "React.js Masterclass": "/AI_Tutor_New_UI/Dashboard/react_fundamentals.png",
+    PostgreSQL: "/AI_Tutor_New_UI/Dashboard/postgresql.png",
+    "MongoDB Fundamentals": "/AI_Tutor_New_UI/Dashboard/MongoDB.png",
+    "Machine Learning Fundamentals": "/AI_Tutor_New_UI/Dashboard/ML_fundamentals.png",
+    "ML Fundamentals": "/AI_Tutor_New_UI/Dashboard/ML_fundamentals.png",
+    "Full Stack Web Development": "/AI_Tutor_New_UI/Dashboard/full_stack_web_dev.png",
+    "Full Stack Web Dev": "/AI_Tutor_New_UI/Dashboard/full_stack_web_dev.png",
+  };
+  return artwork[title] || "/AI_Tutor_New_UI/Dashboard/logo.png";
+};
+
+import { parseLessonCount, selectEligibleAICourse } from "../utils/courseEligibility";
+
+const purchasedId = (entry) => entry?.id ?? entry?.courseId ?? entry?.course?.id;
+const matchesCourse = (entry, id) => String(purchasedId(entry)) === String(id);
+
+const Dashboard = () => {
+  const { user, fetchUserProfile } = useAuth();
+  const navigate = useNavigate();
+  const [courses, setCourses] = useState([]);
+  const [certificateData, setCertificateData] = useState(null);
+  const [analyticsData, setAnalyticsData] = useState(null);
+  const [statsCardsData, setStatsCardsData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [coursesLoadFailed, setCoursesLoadFailed] = useState(false);
+  const [learningStreak] = useState(() => {
+    const stored = Number.parseInt(localStorage.getItem("streak") || "0", 10);
+    return Number.isFinite(stored) ? Math.max(0, stored) : 0;
+  });
+
+  useEffect(() => {
+    if (!loading) {
+      window.dispatchEvent(new Event("app:initial-content-ready"));
+    }
+  }, [loading]);
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const token = localStorage.getItem("token");
+        const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+        const [coursesResult, certificateResult, analyticsResult, statsResult] =
+          await Promise.allSettled([
+            apiFetch("/api/courses", { headers }),
+            apiFetch("/api/certificate/list", { headers }),
+            apiFetch("/api/analytics", { headers }),
+            apiFetch("/api/courses/stats/cards", { headers }),
+          ]);
+
+        if (coursesResult.status === "fulfilled" && coursesResult.value.ok) {
+          setCourses(await coursesResult.value.json());
+        } else {
+          setCoursesLoadFailed(true);
+        }
+
+        if (certificateResult.status === "fulfilled" && certificateResult.value.ok) {
+          setCertificateData(await certificateResult.value.json());
+        }
+
+        if (analyticsResult.status === "fulfilled" && analyticsResult.value.ok) {
+          setAnalyticsData(await analyticsResult.value.json());
+        }
+
+        // Real backend shape of /api/courses/stats/cards is:
+        // { totalCourses, completedCourses, hoursLearned, certificates }
+        // The course list must not depend on the stats request: if stats fail,
+        // courses and the AI lesson banner still operate correctly.
+        if (statsResult.status === "fulfilled" && statsResult.value.ok) {
+          try {
+            const stats = await statsResult.value.json();
+            setStatsCardsData(stats);
+          } catch (statsError) {
+            console.error("Error parsing dashboard stats:", statsError);
+          }
+        }
+      } catch (error) {
+        console.error("Error fetching dashboard data:", error);
+        setCoursesLoadFailed(true);
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, []);
+
+  const enrolledCourses = useMemo(
+    () =>
+      courses
+        .filter((course) =>
+          user?.purchasedCourses?.some((entry) => matchesCourse(entry, course.id)),
+        )
+        .map((course) => {
+          const purchase = user?.purchasedCourses?.find((entry) => matchesCourse(entry, course.id));
+          const total = parseLessonCount(course);
+          const completed = purchase?.progress?.completedLessons?.length || 0;
+          return {
+            ...course,
+            purchase,
+            total,
+            completed,
+            progress: total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0,
+          };
+        }),
+    [courses, user?.purchasedCourses],
+  );
+
+  const inProgress = enrolledCourses.filter(
+    (course) => course.completed > 0 && course.completed < course.total,
+  );
+  const completed = enrolledCourses.filter(
+    (course) => course.total > 0 && course.completed >= course.total,
+  );
+  const continueCourse = inProgress[0] || enrolledCourses[0];
+  const certificateCount =
+    certificateData?.stats?.certificatesEarned ??
+    statsCardsData?.certificates ??
+    user?.analytics?.certificates ??
+    0;
+  const totalHours =
+    analyticsData?.totalHours ?? statsCardsData?.hoursLearned ?? user?.analytics?.totalHours;
+
+  const weeklyActivity = useMemo(() => {
+    if (
+      Array.isArray(user?.analytics?.weeklyActivity) &&
+      user.analytics.weeklyActivity.length > 0
+    ) {
+      return user.analytics.weeklyActivity;
+    }
+
+    const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const dayHoursMap = { Mon: 0, Tue: 0, Wed: 0, Thu: 0, Fri: 0, Sat: 0, Sun: 0 };
+
+    const sessions = Array.isArray(analyticsData?.studySessions)
+      ? analyticsData.studySessions
+      : Array.isArray(user?.analytics?.studySessions)
+        ? user.analytics.studySessions
+        : [];
+
+    const now = new Date();
+    const startOfWeek = new Date(now);
+    const day = startOfWeek.getDay();
+    const diff = startOfWeek.getDate() - day + (day === 0 ? -6 : 1);
+    startOfWeek.setDate(diff);
+    startOfWeek.setHours(0, 0, 0, 0);
+
+    sessions.forEach((s) => {
+      const sessionDate = new Date(s.date);
+      if (sessionDate >= startOfWeek) {
+        const dName = sessionDate.toLocaleDateString("en-US", { weekday: "short" });
+        if (dayHoursMap[dName] != null) {
+          dayHoursMap[dName] += Number(s.hours || s.duration || 0);
+        }
+      }
+    });
+
+    if (Object.values(dayHoursMap).every((v) => v === 0) && user?.purchasedCourses?.length) {
+      user.purchasedCourses.forEach((c) => {
+        if (c.progress?.lastWatched) {
+          const watchedDate = new Date(c.progress.lastWatched);
+          if (watchedDate >= startOfWeek) {
+            const dName = watchedDate.toLocaleDateString("en-US", { weekday: "short" });
+            if (dayHoursMap[dName] != null) {
+              const compCount = c.progress.completedLessons?.length || 1;
+              dayHoursMap[dName] += parseFloat((compCount * 0.5).toFixed(1));
+            }
+          }
+        }
+      });
+    }
+
+    return days.map((d) => ({
+      day: d,
+      hours: parseFloat((dayHoursMap[d] || 0).toFixed(1)),
+    }));
+  }, [user?.analytics, analyticsData, user?.purchasedCourses]);
+
+  const weeklySummary = useMemo(() => {
+    if (user?.analytics?.weeklySummary) return user.analytics.weeklySummary;
+    const totalWeeklyHours = weeklyActivity.reduce((sum, d) => sum + Number(d.hours || 0), 0);
+    return {
+      hours: totalWeeklyHours,
+      changePercent: totalWeeklyHours > 0 ? 15 : null,
+    };
+  }, [user?.analytics?.weeklySummary, weeklyActivity]);
+
+  const upcomingSessions = Array.isArray(user?.upcomingSessions) ? user.upcomingSessions : [];
+
+  const handleContinue = () => {
+    if (continueCourse) navigate(`/learning/${continueCourse.id}`);
+    else navigate("/courses", { state: { activeTab: "explore" } });
+  };
+
+  // AI lesson generation banner action (Issue #183)
+  const handleGenerateAILesson = async () => {
+    if (loading) {
+      toast("Courses are still loading. Please try again in a moment.");
+      return;
+    }
+
+    // 1. Select from locally resolved enrolled courses
+    let targetCourse = selectEligibleAICourse(enrolledCourses);
+
+    // If enrolled courses are present but none have eligible lessons:
+    if (!targetCourse && enrolledCourses.length > 0) {
+      toast.error("No eligible lessons available in your enrolled courses.");
+      return;
+    }
+
+    // 2. If no enrolled courses found from user.purchasedCourses, query my-courses API
+    if (!targetCourse && enrolledCourses.length === 0) {
+      try {
+        const response = await apiFetch("/api/courses/my-courses");
+        if (!response || !response.ok) {
+          throw new Error(`My courses API failed: ${response?.status}`);
+        }
+        const myEnrolled = await response.json();
+        if (Array.isArray(myEnrolled) && myEnrolled.length > 0) {
+          const mapped = myEnrolled.map((course) => {
+            const purchase = user?.purchasedCourses?.find((entry) =>
+              matchesCourse(entry, course.id),
+            );
+            const total = parseLessonCount(course);
+            const completed = purchase?.progress?.completedLessons?.length || 0;
+            return {
+              ...course,
+              total,
+              completed,
+            };
+          });
+          targetCourse = selectEligibleAICourse(mapped);
+          if (!targetCourse) {
+            toast.error("No eligible lessons available in your enrolled courses.");
+            return;
+          }
+        }
+      } catch (error) {
+        console.error("Error fetching enrolled courses:", error);
+        toast.error("Couldn't load your courses. Please try again.");
+        return;
+      }
+    }
+
+    if (targetCourse?.id) {
+      navigate(`/learning/${targetCourse.id}`, { state: { openAIVoiceover: true } });
+      return;
+    }
+
+    // 3. User has no enrolled courses: guide to explore
+    if (courses.length > 0) {
+      toast("Enroll in a course to try AI lessons.");
+      navigate("/courses", { state: { activeTab: "explore" } });
+    } else if (coursesLoadFailed) {
+      toast.error("Couldn't load courses. Please try again.");
+    } else {
+      toast.error("No courses are available right now. Check back soon!");
+    }
+  };
+
+  const enrollAndPreview = async (course) => {
+    if (!user) return navigate("/login");
+    try {
+      if (Number(course.priceValue || 0) === 0) {
+        await apiFetch("/api/users/purchase-course", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${localStorage.getItem("token")}`,
+          },
+          body: JSON.stringify({ courseId: course.id, courseTitle: course.title }),
+        });
+        if (typeof fetchUserProfile === "function") await fetchUserProfile();
+        window.dispatchEvent(new Event("refreshCourses"));
+      }
+      navigate(`/course-preview/${course.id}`);
+    } catch (error) {
+      console.error("Enroll and preview error:", error);
+      navigate(`/course-preview/${course.id}`);
+    }
+  };
+
+  if (loading) return <LoadingSpinner variant="inline" label="Loading dashboard..." />;
+
+  const statCards = [
+    { label: "Ongoing courses", value: inProgress.length, icon: Play, tone: "blue" },
+    { label: "Completed", value: completed.length, icon: CheckCircle2, tone: "emerald" },
+    { label: "Certificates", value: certificateCount, icon: Award, tone: "violet" },
+    {
+      label: totalHours == null ? "Hours not recorded" : "Hours spent",
+      value: totalHours == null ? "—" : `${totalHours}h`,
+      icon: Clock3,
+      tone: "amber",
+    },
+  ];
+
+  return (
+    <main className="dashboard-content-scroll h-full min-h-0 flex-1 overflow-x-hidden overflow-y-scroll bg-canvas-alt px-4 pb-24 pt-5 sm:px-5 lg:px-6">
+      <Helmet>
+        <title>Dashboard | UptoSkills</title>
+        <meta
+          name="description"
+          content="Track learning progress, enrolled courses and certificates on UptoSkills."
+        />
+      </Helmet>
+      <Preferences key={localStorage.getItem("token")} mode="modal" />
+
+      <div className="dashboard-content-inner mx-auto max-w-[1500px] space-y-6">
+        <DashboardHero
+          name={user?.name || "User"}
+          streak={learningStreak}
+          onContinue={() => navigate("/courses")}
+          actionLabel="View My Courses"
+        />
+
+        <section className="grid grid-cols-2 gap-3 xl:grid-cols-4" aria-label="Learning summary">
+          {statCards.map(({ label, value, icon, tone }) => (
+            <article
+              key={label}
+              className="dashboard-summary-card rounded-2xl border border-border bg-card p-4 shadow-sm"
+            >
+              <div className={`dashboard-summary-icon dashboard-summary-icon--${tone}`}>
+                {React.createElement(icon, { className: "h-5 w-5" })}
+              </div>
+              <p className="mt-4 text-3xl font-extrabold tracking-tight text-main">{value}</p>
+              <p className="mt-1 text-sm font-semibold text-muted">{label}</p>
+            </article>
+          ))}
+        </section>
+
+        {/* AI Generated Lessons promo (Issue #183) */}
+        <AILessonBanner onGenerate={handleGenerateAILesson} />
+
+        <ContinueLearningCard
+          course={continueCourse}
+          onContinue={handleContinue}
+          onExplore={() => navigate("/courses", { state: { activeTab: "explore" } })}
+          artworkFor={artworkFor}
+          buttonClass={BLUE_BUTTON}
+        />
+
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,0.85fr)]">
+          <div className="flex flex-col gap-6">
+            <LearningActivityCard data={weeklyActivity} summary={weeklySummary} />
+
+            <div className="grid flex-1 gap-6 md:grid-cols-2">
+              <TodaysLearningPlan
+                continueCourse={continueCourse}
+                weeklyActivity={weeklyActivity}
+                streak={learningStreak}
+              />
+              <MeetAiMentorCard continueCourse={continueCourse} />
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-6">
+            <UpcomingLiveSession sessions={upcomingSessions} />
+            <QuickActions />
+          </div>
+        </div>
+
+        <RecentActivityCard
+          purchasedCourses={user?.purchasedCourses || []}
+          enrolledCourses={enrolledCourses}
+          studySessions={analyticsData?.studySessions || []}
+          certificateData={certificateData}
+        />
+
+        <section>
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.12em] text-[#3867D6]">
+                Discover
+              </p>
+              <h2 className="mt-1 text-xl font-extrabold text-main">Popular courses</h2>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                aria-label="Previous courses"
+                onClick={() =>
+                  document
+                    .getElementById("dashboardCourseSlider")
+                    ?.scrollBy({ left: -360, behavior: "smooth" })
+                }
+                className="dashboard-icon-button"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                aria-label="Next courses"
+                onClick={() =>
+                  document
+                    .getElementById("dashboardCourseSlider")
+                    ?.scrollBy({ left: 360, behavior: "smooth" })
+                }
+                className="dashboard-icon-button"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+          <div
+            id="dashboardCourseSlider"
+            className="dashboard-course-slider scrollbar-hide flex snap-x gap-5 overflow-x-auto pb-4"
+          >
+            {courses.slice(0, 10).map((course) => {
+              const enrolled = user?.purchasedCourses?.some((entry) =>
+                matchesCourse(entry, course.id),
+              );
+              return (
+                <article
+                  key={course.id}
+                  className="dashboard-course-card group w-[300px] flex-none snap-start overflow-hidden rounded-2xl border border-border bg-card shadow-sm sm:w-[330px]"
+                >
+                  <div className="course-artwork-shell relative aspect-[16/9] overflow-hidden">
+                    <img
+                      src={artworkFor(course.title)}
+                      alt={course.title}
+                      className="course-artwork h-full w-full object-cover transition duration-300 group-hover:scale-[1.025]"
+                    />
+                    <div className="absolute bottom-3 right-3">
+                      <CourseCardMeta courseId={course.id} />
+                    </div>
+                  </div>
+                  <div className="p-5">
+                    <h3 className="line-clamp-2 font-extrabold text-main">{course.title}</h3>
+                    <p className="mt-2 text-sm text-muted">
+                      {course.lessons || "Lessons available"} · {course.level || "All levels"}
+                    </p>
+                    <div className="mt-5 flex items-center justify-between gap-3">
+                      <span
+                        className={`font-extrabold ${Number(course.priceValue || 0) === 0 ? "text-emerald-500" : "text-main"}`}
+                      >
+                        {Number(course.priceValue || 0) === 0 ? "Free" : `₹${course.priceValue}`}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          enrolled ? navigate(`/learning/${course.id}`) : enrollAndPreview(course)
+                        }
+                        className={BLUE_BUTTON}
+                      >
+                        {enrolled ? "Open course" : "View course"}
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="rounded-3xl border border-border bg-card p-5 shadow-sm sm:p-6">
+          <div className="mb-5 flex items-center justify-between gap-4">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.12em] text-[#3867D6]">
+                Your library
+              </p>
+              <h2 className="mt-1 text-xl font-extrabold text-main">Course progress</h2>
+            </div>
+            <Link to="/courses" className="text-sm font-bold text-[#3867D6]">
+              View all →
+            </Link>
+          </div>
+          {enrolledCourses.length ? (
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {enrolledCourses.slice(0, 3).map((course) => (
+                <Link
+                  key={course.id}
+                  to={`/learning/${course.id}`}
+                  className="group rounded-2xl border border-border bg-canvas-alt p-4 transition hover:-translate-y-0.5 hover:border-[#3867D6]/40"
+                >
+                  <div className="flex items-center gap-4">
+                    <img
+                      src={artworkFor(course.title)}
+                      alt=""
+                      className="h-16 w-16 rounded-xl object-cover"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <h3 className="truncate font-extrabold text-main">{course.title}</h3>
+                      <p className="mt-1 text-xs text-muted">
+                        {course.completed}/{course.total || 0} lessons
+                      </p>
+                    </div>
+                    <BookOpen className="h-5 w-5 text-[#3867D6]" />
+                  </div>
+                  <div className="mt-4 h-2 overflow-hidden rounded-full bg-border">
+                    <div
+                      className="h-full rounded-full bg-[#3867D6]"
+                      style={{ width: `${course.progress}%` }}
+                    />
+                  </div>
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted">Enrolled courses will appear here.</p>
+          )}
+        </section>
+
+        <RecommendedForYou />
+      </div>
+      <FloatingAssistant />
+    </main>
+  );
+};
+
+export default Dashboard;

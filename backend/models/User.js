@@ -1,0 +1,165 @@
+// backend/models/User.js
+import { DataTypes, Model } from "sequelize";
+import bcrypt from "bcrypt";
+import { sequelize } from "../config/db.js";
+
+class User extends Model {}
+
+User.init(
+  {
+    id: {
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4,
+      primaryKey: true,
+    },
+
+    firstName: {
+      type: DataTypes.STRING,
+    },
+
+    lastName: {
+      type: DataTypes.STRING,
+    },
+
+    name: {
+      type: DataTypes.STRING,
+      allowNull: false,
+    },
+
+    email: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      unique: true,
+      validate: {
+        isEmail: true,
+      },
+    },
+
+    password: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    passwordChangedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    googleId: {
+      type: DataTypes.STRING,
+    },
+
+    role: {
+      type: DataTypes.ENUM("user", "admin", "superadmin"),
+      defaultValue: "user",
+      allowNull: false,
+    },
+
+    status: {
+      type: DataTypes.ENUM("active", "on-hold"),
+      defaultValue: "active",
+      allowNull: false,
+    },
+
+    bio: {
+      type: DataTypes.STRING,
+      defaultValue: "",
+    },
+
+    avatar_url: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      defaultValue: null,
+    },
+
+    purchasedCourses: {
+      type: DataTypes.JSONB,
+      defaultValue: [],
+    },
+
+    analytics: {
+      type: DataTypes.JSONB,
+      defaultValue: {
+        totalHours: 0,
+        daysStudied: 0,
+        studySessions: [],
+        lastStudyDate: null,
+        attendance: 0,
+        avgMarks: 0,
+        dailyHours: 0,
+        totalCourses: 0,
+        completedCourses: 0,
+        certificates: 0,
+      },
+    },
+
+    settings: {
+      type: DataTypes.JSONB,
+      defaultValue: {
+        notifications: {
+          emailNotifications: true,
+          pushNotifications: true,
+          courseUpdates: true,
+          discussionReplies: true,
+        },
+        security: {
+          twoFactorAuth: false,
+          loginAlerts: true,
+        },
+        appearance: {
+          theme: "light",
+          language: "en",
+        },
+      },
+    },
+    resetPasswordToken: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    resetPasswordExpires: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+
+    // Tracks whether the user has completed first-time onboarding
+    // (bio, avatar, and for Google users: name + password)
+    isProfileComplete: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+    },
+  },
+  {
+    sequelize,
+    modelName: "User",
+    timestamps: true,
+    hooks: {
+      beforeSave: async (user) => {
+        // hash password only if it was changed
+        if (user.password && user.changed("password")) {
+          const salt = await bcrypt.genSalt(10);
+          user.password = await bcrypt.hash(user.password, salt);
+        }
+
+        // Dynamically calculate isProfileComplete on EVERY save for ALL users
+        const hasBio = user.bio && user.bio.trim().length > 0;
+        // Profile images are optional. Removing one must not invalidate the account.
+        const hasFirstName = user.firstName && user.firstName.trim().length > 0;
+        const hasLastName = user.lastName && user.lastName.trim().length > 0;
+        const hasPassword = user.password && user.password.trim().length > 0;
+
+        // Google users MUST have a password to be "complete".
+        // Email users are "complete" if Bio, Avatar, and Names are present.
+        if (user.googleId) {
+          user.isProfileComplete = Boolean(hasBio && hasFirstName && hasLastName && hasPassword);
+        } else {
+          user.isProfileComplete = Boolean(hasBio && hasFirstName && hasLastName);
+        }
+      },
+    },
+  },
+);
+
+User.prototype.matchPassword = async function (enteredPassword) {
+  if (!this.password) return false;
+  return await bcrypt.compare(enteredPassword, this.password);
+};
+
+export default User;

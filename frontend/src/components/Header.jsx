@@ -1,0 +1,440 @@
+import React, { useState, useRef, useEffect, useCallback } from "react";
+import {
+  Bell,
+  Menu,
+  X,
+  User,
+  Settings,
+  LogOut,
+  ShieldCheck,
+  ChevronDown,
+  Search,
+} from "lucide-react";
+import { useAuth } from "../context/AuthContext";
+import { useNavigate } from "react-router-dom";
+import ThemeToggle from "../components/common/ThemeToggle";
+import { useSidebar } from "../context/SidebarContext";
+import { useTranslation } from "react-i18next";
+import NotificationItem from "../components/common/NotificationItem";
+import LoadingSpinner from "./common/LoadingSpinner";
+import {
+  fetchNotifications,
+  markAsReadApi,
+  markAllAsReadApi,
+  clearAllNotificationsApi,
+} from "../service/notificationService";
+import toast from "react-hot-toast";
+
+const Header = () => {
+  const { t } = useTranslation();
+  const { sidebarOpen, setSidebarOpen, sidebarCollapsed } = useSidebar();
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const { user, logout, isAuthenticated } = useAuth();
+  const navigate = useNavigate();
+  const dropdownRef = useRef(null);
+  const notificationRef = useRef(null);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  // Notifications State
+  const [notifications, setNotifications] = useState([]);
+
+  // Relative Time Formatter helper
+  const formatRelativeTime = (dateString) => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffInSeconds = Math.floor((now - date) / 1000);
+
+    if (diffInSeconds < 60) return "Just now";
+    if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
+    if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}h ago`;
+    return `${Math.floor(diffInSeconds / 86400)}d ago`;
+  };
+  const loadNotifications = useCallback(async () => {
+    if (!user) return;
+    try {
+      setLoading(true);
+      const data = await fetchNotifications();
+      // Format the date for the UI
+      const formattedData = data.map((n) => ({
+        ...n,
+        time: formatRelativeTime(n.createdAt),
+      }));
+      setNotifications(formattedData);
+    } catch (error) {
+      console.error("Failed to load notifications:", error);
+    } finally {
+      setLoading(false);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    loadNotifications();
+    // Optional: Set up polling or websocket here
+  }, [loadNotifications]);
+
+  useEffect(() => {
+    const handleRefresh = () => {
+      loadNotifications();
+    };
+
+    window.addEventListener("refreshNotifications", handleRefresh);
+
+    return () => {
+      window.removeEventListener("refreshNotifications", handleRefresh);
+    };
+  }, [loadNotifications]);
+
+  // Fetch Notifications
+
+  const unreadCount = notifications.filter((n) => n.unread).length;
+
+  // ReferenceError se bachne ke liye displayName ko sabse upar define karein
+  const displayName = user?.name || user?.email?.split("@")[0] || "User";
+
+  const handleLogout = () => {
+    setShowLogoutConfirm(true);
+  };
+
+  const confirmLogout = () => {
+    logout();
+    setShowLogoutConfirm(false);
+    setDropdownOpen(false);
+    navigate("/login", { state: { logoutSuccess: true } });
+  };
+
+  const toggleDropdown = () => {
+    setDropdownOpen((prev) => !prev);
+  };
+
+  // Bahar click karne par dropdown band karne ka logic
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setDropdownOpen(false);
+      }
+      if (notificationRef.current && !notificationRef.current.contains(event.target)) {
+        setNotifOpen(false);
+      }
+
+      if (
+        window.innerWidth < 1024 &&
+        !dropdownRef.current?.contains(event.target) &&
+        !notificationRef.current?.contains(event.target)
+      ) {
+        // Only close sidebar if clicking outside both dropdowns on mobile
+        // Note: sidebar logic might be different depending on requirements
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const markAllRead = async () => {
+    try {
+      await markAllAsReadApi();
+      setNotifications((prev) => prev.map((n) => ({ ...n, unread: false })));
+      toast.success("Marked all as read");
+    } catch (error) {
+      console.log(error);
+      toast.error("Failed to mark all as read");
+    }
+  };
+
+  const markAsRead = async (id) => {
+    try {
+      await markAsReadApi(id);
+      setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, unread: false } : n)));
+    } catch (error) {
+      console.error("Failed to mark notification as read:", error);
+    }
+  };
+
+  const clearAll = async () => {
+    try {
+      await clearAllNotificationsApi();
+      setNotifications([]);
+      toast.success("Notifications cleared");
+    } catch (error) {
+      console.log(error);
+      toast.error("Failed to clear notifications");
+    }
+  };
+
+  return (
+    <>
+      <header
+        className={`bg-card/80 backdrop-blur-xl border-b border-border/50 px-3 sm:px-5 py-3 fixed top-0 right-0 z-[100] transition-all duration-300 ease-out ${sidebarCollapsed ? "left-0 lg:left-[72px]" : "left-0 lg:left-[245px]"}`}
+      >
+        <div className="flex items-center justify-between w-full gap-4">
+          {/* Mobile Menu & Search */}
+          <div className="flex items-center space-x-2 sm:space-x-4 flex-1">
+            <button
+              className="lg:hidden p-2 rounded-xl bg-card border border-border hover:bg-canvas-alt transition-all"
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+            >
+              {sidebarOpen ? (
+                <X className="w-5 h-5 text-muted" />
+              ) : (
+                <Menu className="w-5 h-5 text-muted" />
+              )}
+            </button>
+
+            {/* Search Bar */}
+            <div className="relative hidden w-full max-w-lg md:block transition-all duration-300">
+              <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                <Search className="h-[18px] w-[18px] text-muted-foreground opacity-70" />
+              </div>
+              <input
+                type="text"
+                placeholder="Search mentors, topics, or projects..."
+                className="block w-full pl-10 pr-4 py-2.5 border border-border/80 rounded-2xl leading-5 bg-canvas-alt/50 text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-[#2f5cc4]/30 focus:border-[#2f5cc4]/50 sm:text-sm transition-all shadow-sm"
+              />
+            </div>
+          </div>
+
+          {/* Action Buttons & Profile */}
+          <div className="flex items-center space-x-1.5 sm:space-x-3">
+            {isAuthenticated && (
+              <div className="relative" ref={notificationRef}>
+                <button
+                  onClick={() => setNotifOpen(!notifOpen)}
+                  className="header-action-button group relative flex h-10 w-10 cursor-pointer items-center justify-center rounded-xl border border-border bg-card text-muted shadow-sm transition-colors hover:border-[#3867D6]/50 hover:bg-[#3867D6]/10 hover:text-[#3867D6] focus:outline-none focus:ring-4 focus:ring-[#3867D6]/10"
+                >
+                  <Bell className="w-5 h-5 group-hover:rotate-12 transition-transform" />
+                  {unreadCount > 0 && (
+                    <span className="absolute top-0 right-0 translate-x-1/4 -translate-y-1/4 min-w-[18px] h-[18px] px-1 bg-red-500 rounded-full border-2 border-card flex items-center justify-center text-[10px] font-black text-white animate-in zoom-in duration-300">
+                      {unreadCount}
+                    </span>
+                  )}
+                </button>
+
+                {notifOpen && (
+                  <div className="fixed md:absolute left-4 right-4 top-16 md:left-auto md:right-0 md:top-auto md:mt-4 md:w-96 bg-card border border-border/50 rounded-[2rem] shadow-[0_20px_50px_rgba(0,0,0,0.2)] z-[110] overflow-hidden animate-in fade-in zoom-in slide-in-from-top-4 duration-300">
+                    <div className="p-6 bg-gradient-to-br from-[#3867D6]/12 via-[#3867D6]/5 to-transparent border-b border-border/50 flex items-center justify-between">
+                      <div>
+                        <h4 className="text-sm font-black text-main uppercase">Notifications</h4>
+                        <p className="text-[10px] text-muted font-bold uppercase tracking-widest mt-0.5">
+                          {unreadCount > 0
+                            ? `You have ${unreadCount} unread messages`
+                            : "All caught up!"}
+                        </p>
+                      </div>
+                      <div className="flex flex-col items-end gap-1">
+                        <button
+                          onClick={markAllRead}
+                          disabled={unreadCount === 0}
+                          className={`text-[10px] font-black uppercase tracking-wider transition-colors
+                  ${
+                    unreadCount === 0
+                      ? "text-gray-400 cursor-not-allowed opacity-50"
+                      : "text-[#3867D6] dark:text-[#7FA7FF] hover:text-[#315BC0]"
+                  }`}
+                        >
+                          Mark all read
+                        </button>
+
+                        {notifications.length > 0 && (
+                          <button
+                            onClick={clearAll}
+                            className="text-[10px] font-black text-red-500 hover:text-red-600 transition-colors uppercase tracking-wider"
+                          >
+                            Clear All
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="max-h-[350px] overflow-y-auto custom-scrollbar">
+                      {loading ? (
+                        <div className="p-12 text-center">
+                          <LoadingSpinner
+                            variant="compact"
+                            label="Updating notifications"
+                            className="mb-4"
+                          />
+                          <p className="text-xs text-muted">Updating yours...</p>
+                        </div>
+                      ) : notifications.length > 0 ? (
+                        notifications.map((notif) => (
+                          <NotificationItem
+                            key={notif.id}
+                            notification={notif}
+                            onClick={(n) => {
+                              markAsRead(n.id);
+                            }}
+                          />
+                        ))
+                      ) : (
+                        <div className="p-12 text-center">
+                          <div className="w-16 h-16 bg-canvas rounded-3xl flex items-center justify-center mx-auto mb-4 border border-border/50">
+                            <Bell className="w-8 h-8 text-muted/30" />
+                          </div>
+                          <p className="text-sm font-bold text-main">No Notifications</p>
+                          <p className="text-xs text-muted mt-1">Check back later for updates.</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="header-action-button [&>button]:flex [&>button]:h-10 [&>button]:w-10 [&>button]:items-center [&>button]:justify-center [&>button]:rounded-xl [&>button]:border [&>button]:border-border [&>button]:bg-card [&>button]:text-muted [&>button]:shadow-sm [&>button]:transition-colors [&>button:hover]:border-[#3867D6]/50 [&>button:hover]:bg-[#3867D6]/10 [&>button:hover]:text-[#3867D6] [&>button:focus]:outline-none [&>button:focus]:ring-4 [&>button:focus]:ring-[#3867D6]/10">
+              <ThemeToggle />
+            </div>
+
+            {/* PROFILE DROPDOWN SECTION */}
+            {isAuthenticated ? (
+              <div className="relative" ref={dropdownRef}>
+                <button
+                  onClick={toggleDropdown}
+                  className={`ml-1 flex min-h-12 items-center gap-3 rounded-xl border bg-card px-3.5 py-1.5 shadow-sm transition-colors ${dropdownOpen ? "border-[#3867D6]/45 bg-[#3867D6]/10" : "border-border hover:border-[#3867D6]/35 hover:bg-[#3867D6]/5"}`}
+                >
+                  <div className="relative">
+                    <img
+                      src={
+                        user?.avatar_url ||
+                        `https://api.dicebear.com/8.x/initials/svg?seed=${encodeURIComponent(
+                          `${user?.firstName || ""} ${user?.lastName || ""}`.trim() ||
+                            user?.name ||
+                            displayName,
+                        )}&backgroundColor=3b82f6&textColor=ffffff`
+                      }
+                      className="w-9 h-9 rounded-full object-cover"
+                      alt="Avatar"
+                      onError={(e) => {
+                        const seed = encodeURIComponent(
+                          `${user?.firstName || ""} ${user?.lastName || ""}`.trim() ||
+                            user?.name ||
+                            displayName,
+                        );
+                        e.target.src = `https://api.dicebear.com/8.x/initials/svg?seed=${seed}&backgroundColor=3b82f6&textColor=ffffff`;
+                      }}
+                    />
+                    <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-green-500 border-2 border-card rounded-full" />
+                  </div>
+
+                  {/* Name + Role */}
+                  <div className="hidden lg:flex flex-col text-left">
+                    <span className="text-sm font-bold text-main leading-tight">{displayName}</span>
+                    <span className="text-xs text-muted leading-tight mt-0.5">
+                      {user?.role || "BTech CSE"}
+                    </span>
+                  </div>
+
+                  {/* Dropdown arrow */}
+                  <ChevronDown
+                    className={`w-4 h-4 text-muted transition-transform ${
+                      dropdownOpen ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
+
+                {dropdownOpen && (
+                  <div className="absolute right-0 mt-2 w-[calc(100vw-2rem)] max-w-72 overflow-hidden rounded-2xl border border-border bg-card shadow-[0_18px_50px_rgba(15,23,42,0.18)] z-[110] animate-in fade-in zoom-in-95 slide-in-from-top-2 duration-200">
+                    <div className="border-b border-border bg-gradient-to-br from-blue-500/10 to-transparent p-4">
+                      <div className="flex items-center gap-3">
+                        <img
+                          src={
+                            user?.avatar_url ||
+                            `https://api.dicebear.com/8.x/initials/svg?seed=${encodeURIComponent(
+                              `${user?.firstName || ""} ${user?.lastName || ""}`.trim() ||
+                                user?.name ||
+                                displayName,
+                            )}&backgroundColor=3b82f6&textColor=ffffff`
+                          }
+                          className="h-11 w-11 rounded-full border border-border object-cover shadow-sm"
+                          alt="User"
+                          onError={(e) => {
+                            const seed = encodeURIComponent(
+                              `${user?.firstName || ""} ${user?.lastName || ""}`.trim() ||
+                                user?.name ||
+                                displayName,
+                            );
+                            e.target.src = `https://api.dicebear.com/8.x/initials/svg?seed=${seed}&backgroundColor=3b82f6&textColor=ffffff`;
+                          }}
+                        />
+                        <div className="min-w-0">
+                          <h4 className="truncate text-sm font-bold text-main">
+                            {user?.name || displayName}
+                          </h4>
+                          <p className="mt-0.5 truncate text-xs text-muted">
+                            {user?.role || "STUDENT"}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-blue-500/10 px-2.5 py-1 text-[10px] font-semibold text-blue-600 dark:text-blue-300">
+                        <ShieldCheck className="w-3 h-3" /> <span>Verified Profile</span>
+                      </div>
+                    </div>
+
+                    <div className="p-2 text-left">
+                      <button
+                        onClick={() => {
+                          navigate("/settings");
+                          setDropdownOpen(false);
+                        }}
+                        className="group flex w-full items-center rounded-xl px-3 py-2.5 text-sm font-semibold text-main transition-colors hover:bg-blue-500/10 hover:text-blue-600 dark:hover:text-blue-300"
+                      >
+                        <User className="mr-3 w-4 h-4 group-hover:scale-110 transition-transform" />{" "}
+                        {t("nav.profile")}
+                      </button>
+                      <button
+                        onClick={() => {
+                          navigate("/settings");
+                          setDropdownOpen(false);
+                        }}
+                        className="group mt-1 flex w-full items-center rounded-xl px-3 py-2.5 text-sm font-semibold text-main transition-colors hover:bg-blue-500/10 hover:text-blue-600 dark:hover:text-blue-300"
+                      >
+                        <Settings className="mr-3 w-4 h-4 group-hover:rotate-45 transition-transform" />{" "}
+                        {t("nav.settings")}
+                      </button>
+
+                      <div className="my-2 border-t border-border/50 mx-2" />
+
+                      <button
+                        onClick={handleLogout}
+                        className="group flex w-full items-center rounded-xl px-3 py-2.5 text-sm font-semibold text-red-500 transition-colors hover:bg-red-500/10"
+                      >
+                        <LogOut className="mr-3 w-4 h-4 group-hover:translate-x-1 transition-transform" />{" "}
+                        {t("auth.logout")}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </header>
+      {showLogoutConfirm && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm ui-overlay-motion">
+          <div className="bg-card border border-border/50 rounded-[2rem] shadow-2xl p-6 sm:p-8 w-[90%] max-w-sm text-center">
+            <LogOut className="w-10 h-10 text-red-500 mx-auto mb-4" />
+            <h3 className="text-sm font-black uppercase tracking-tight text-main mb-2">Logout</h3>
+            <p className="text-xs text-muted mb-6">Are you sure you want to logout?</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowLogoutConfirm(false)}
+                className="flex-1 py-3 rounded-[1.2rem] text-[10px] font-black uppercase tracking-widest border border-border hover:bg-canvas-alt transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmLogout}
+                className="flex-1 py-3 rounded-[1.2rem] text-[10px] font-black uppercase tracking-widest bg-red-500 text-white hover:bg-red-600 transition-all"
+              >
+                Logout
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+};
+
+export default Header;

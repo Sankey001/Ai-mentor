@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Mentor Live</title>
+    <style>
+      :root {
+        --bg: #f6f5f2;
+        --panel: #ffffff;
+        --text: #1d1d1f;
+        --muted: #6b6b70;
+        --line: #e2e0da;
+        --accent: #2f6b5a;
+        --accent-text: #ffffff;
+        --learner: #e7efe9;
+        --mentor: #f1f0ec;
+        --ok: #2f8a4c;
+        --off: #b42318;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #151615;
+          --panel: #1f201f;
+          --text: #ececea;
+          --muted: #a2a29d;
+          --line: #33342f;
+          --accent: #6fb39d;
+          --accent-text: #0f1a16;
+          --learner: #24342d;
+          --mentor: #2a2b28;
+          --ok: #6cc28a;
+          --off: #f0857b;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      main {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 16px;
+        display: grid;
+        gap: 16px;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      }
+      @media (max-width: 800px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+      }
+      header {
+        grid-column: 1 / -1;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 auto 0 0;
+      }
+      select,
+      input,
+      button {
+        font: inherit;
+        color: inherit;
+      }
+      select,
+      input {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px 10px;
+      }
+      button {
+        background: var(--accent);
+        color: var(--accent-text);
+        border: 0;
+        border-radius: 8px;
+        padding: 8px 14px;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      button.secondary {
+        background: var(--panel);
+        color: var(--text);
+        border: 1px solid var(--line);
+      }
+      .stage {
+        position: relative;
+        background: #000;
+        border-radius: 12px;
+        overflow: hidden;
+        aspect-ratio: 3 / 4;
+        max-height: 75vh;
+        justify-self: center;
+        width: 100%;
+      }
+      .stage video {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+      #talking {
+        visibility: hidden;
+      }
+      .caption {
+        position: absolute;
+        left: 8px;
+        right: 8px;
+        bottom: 8px;
+        padding: 6px 10px;
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.65);
+        color: #fff;
+        text-align: center;
+      }
+      .caption:empty {
+        display: none;
+      }
+      .side {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-height: 0;
+      }
+      #log {
+        flex: 1;
+        min-height: 240px;
+        max-height: 60vh;
+        overflow-y: auto;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .msg {
+        padding: 8px 12px;
+        border-radius: 10px;
+        max-width: 90%;
+      }
+      .learner {
+        background: var(--learner);
+        align-self: flex-end;
+      }
+      .mentor {
+        background: var(--mentor);
+        align-self: flex-start;
+      }
+      .meta {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      form {
+        display: flex;
+        gap: 8px;
+      }
+      form input {
+        flex: 1;
+        min-width: 0;
+      }
+      .status {
+        display: flex;
+        gap: 14px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: 5px;
+        background: var(--muted);
+      }
+      .dot.ok {
+        background: var(--ok);
+      }
+      .dot.off {
+        background: var(--off);
+      }
+      .empty {
+        color: var(--muted);
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>AI Mentor Live</h1>
+        <label
+          >Mentor
+          <select id="mentor" aria-label="Mentor"></select
+        ></label>
+        <div class="status" aria-live="polite">
+          <span><span class="dot" id="voice-dot"></span>Cloned voice</span>
+          <span><span class="dot" id="face-dot"></span>Lip-sync</span>
+        </div>
+      </header>
+
+      <div class="stage">
+        <video id="idle" muted loop playsinline autoplay></video>
+        <video id="talking" playsinline></video>
+        <div class="caption" id="caption"></div>
+      </div>
+
+      <div class="side">
+        <div id="log"><p class="empty" id="empty">Ask your mentor anything to start.</p></div>
+        <form id="form">
+          <input
+            id="message"
+            maxlength="500"
+            autocomplete="off"
+            placeholder="Ask a question"
+            aria-label="Message"
+          />
+          <button type="button" class="secondary" id="mic" hidden>Speak</button>
+          <button id="send">Send</button>
+        </form>
+      </div>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const idle = $("idle"),
+        talking = $("talking"),
+        caption = $("caption");
+      const audio = new Audio();
+      let history = [];
+      let queue = [];
+      let playing = false;
+
+      async function loadMentors() {
+        try {
+          const { mentors } = await (await fetch("/mentors")).json();
+          for (const mentor of mentors) $("mentor").add(new Option(mentor.name, mentor.name));
+          if (!mentors.length)
+            $("empty").textContent = "No mentors yet. Add a folder with clips to backend/input/.";
+          selectMentor();
+        } catch {
+          $("empty").textContent = "Cannot reach the app server. Is start_app.py running?";
+        }
+      }
+
+      function selectMentor() {
+        const name = $("mentor").value;
+        if (!name) return;
+        idle.src = `/mentors/${encodeURIComponent(name)}/idle.mp4`;
+        idle.play().catch(() => {});
+        history = [];
+        $("log").replaceChildren();
+      }
+
+      async function checkWorkers() {
+        try {
+          const status = await (await fetch("/talk/status")).json();
+          $("voice-dot").className = "dot " + (status.voice ? "ok" : "off");
+          $("face-dot").className = "dot " + (status.face ? "ok" : "off");
+        } catch {
+          /* the server itself is down; the dots stay grey */
+        }
+      }
+
+      function addMessage(role, text) {
+        $("empty")?.remove();
+        const item = document.createElement("div");
+        item.className = `msg ${role}`;
+        const body = document.createElement("div");
+        body.textContent = text;
+        item.append(body);
+        $("log").append(item);
+        $("log").scrollTop = $("log").scrollHeight;
+        return body;
+      }
+
+      // Sentences play one after another; the idle clip shows whenever nothing plays.
+      function enqueue(chunk) {
+        queue.push(chunk);
+        if (!playing) playNext();
+      }
+
+      function playNext() {
+        const chunk = queue.shift();
+        talking.onended = audio.onended = talking.onerror = audio.onerror = null;
+        if (!chunk) {
+          playing = false;
+          talking.style.visibility = "hidden";
+          caption.textContent = "";
+          return;
+        }
+        playing = true;
+        caption.textContent = chunk.text;
+        const player = chunk.kind === "video" ? talking : chunk.kind === "audio" ? audio : null;
+        talking.style.visibility = chunk.kind === "video" ? "visible" : "hidden";
+        if (!player) {
+          // text only: give the reader time, then move on
+          setTimeout(playNext, 350 * chunk.text.split(" ").length);
+          return;
+        }
+        player.src = chunk.url;
+        player.onended = player.onerror = playNext;
+        player.play().catch(playNext);
+      }
+
+      async function send(message) {
+        const mentor = $("mentor").value;
+        if (!message || !mentor) return;
+        addMessage("learner", message);
+        $("send").disabled = true;
+        const reply = addMessage("mentor", "…");
+        const used = { voice: new Set(), face: new Set() };
+        let replyText = "",
+          provider = "";
+        try {
+          const response = await fetch("/talk", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mentor, message, history: history.slice(-20) }),
+          });
+          if (!response.ok) throw new Error(`server answered ${response.status}`);
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const events = buffer.split("\n\n");
+            buffer = events.pop();
+            for (const raw of events) {
+              if (!raw.startsWith("data: ")) continue;
+              const event = JSON.parse(raw.slice(6));
+              if (event.type === "reply") {
+                replyText = event.text;
+                provider = event.provider;
+                reply.textContent = replyText;
+              } else if (event.type === "chunk") {
+                used.voice.add(event.voice);
+                used.face.add(event.face);
+                enqueue(event);
+              }
+            }
+          }
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          meta.textContent = `${provider} · voice: ${[...used.voice].join("/")} · face: ${[...used.face].join("/")}`;
+          reply.after(meta);
+          history.push({ role: "learner", text: message }, { role: "mentor", text: replyText });
+        } catch {
+          reply.textContent =
+            "The mentor could not answer. Check that the app is running and try again.";
+        } finally {
+          $("send").disabled = false;
+          checkWorkers();
+        }
+      }
+
+      $("form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        const message = $("message").value.trim();
+        $("message").value = "";
+        send(message);
+      });
+      $("mentor").addEventListener("change", selectMentor);
+
+      // Speech input where the browser supports it (Chrome, Edge); typing always works.
+      const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (Recognition) {
+        const recognizer = new Recognition();
+        recognizer.lang = navigator.language || "en-US";
+        recognizer.onresult = (event) => send(event.results[0][0].transcript.trim());
+        recognizer.onend = () => {
+          $("mic").textContent = "Speak";
+        };
+        $("mic").hidden = false;
+        $("mic").onclick = () => {
+          $("mic").textContent = "Listening…";
+          recognizer.start();
+        };
+      }
+
+      loadMentors();
+      checkWorkers();
+      setInterval(checkWorkers, 15000);
+    </script>
+  </body>
+</html>

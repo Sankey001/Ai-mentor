@@ -1,0 +1,174 @@
+import Course from "./Course.js";
+import Module from "./Module.js";
+import Lesson from "./Lesson.js";
+import LessonContent from "./LessonContent.js";
+import User from "./User.js";
+import Preference from "./Preference.js";
+import AIVideo from "./AIVideo.js";
+import CalendarTask from "./CalendarTask.js";
+import CourseFeedback from "./CourseFeedback.js";
+import FlashcardDeck from "./FlashcardDeck.js";
+
+/* ======================
+   COURSE → MODULE
+====================== */
+
+Course.hasMany(Module, {
+  foreignKey: "courseId",
+  as: "modules",
+  onDelete: "CASCADE",
+});
+
+Module.belongsTo(Course, {
+  foreignKey: "courseId",
+});
+
+/* ======================
+   MODULE → LESSON
+====================== */
+
+Module.hasMany(Lesson, {
+  foreignKey: "moduleId",
+  as: "lessons",
+  onDelete: "CASCADE",
+});
+
+Lesson.belongsTo(Module, {
+  foreignKey: "moduleId",
+});
+
+/* ======================
+   LESSON → CONTENT
+====================== */
+
+Lesson.hasOne(LessonContent, {
+  foreignKey: "lessonId",
+  as: "content",
+  onDelete: "CASCADE",
+});
+
+LessonContent.belongsTo(Lesson, {
+  foreignKey: "lessonId",
+});
+
+/* ======================
+   USER → PREFERENCE
+====================== */
+
+User.hasOne(Preference, {
+  foreignKey: "user_id",
+  as: "preferences",
+  onDelete: "CASCADE",
+});
+
+Preference.belongsTo(User, {
+  foreignKey: "user_id",
+});
+
+/* ======================
+   LESSON → AI VIDEO
+====================== */
+
+Lesson.hasMany(AIVideo, {
+  foreignKey: "lessonId",
+  as: "aiVideos",
+  onDelete: "CASCADE",
+});
+
+AIVideo.belongsTo(Lesson, {
+  foreignKey: "lessonId",
+});
+
+/* ======================
+   USER → AI VIDEO
+====================== */
+
+User.hasMany(AIVideo, {
+  foreignKey: "userId",
+  as: "aiVideos",
+  onDelete: "SET NULL",
+});
+
+AIVideo.belongsTo(User, {
+  foreignKey: "userId",
+  as: "user",
+});
+
+/* ======================
+   USER → CALENDAR TASK
+====================== */
+
+User.hasMany(CalendarTask, {
+  foreignKey: "userId",
+  as: "calendarTasks",
+  onDelete: "CASCADE",
+});
+
+CalendarTask.belongsTo(User, {
+  foreignKey: "userId",
+});
+
+/* ======================
+   COURSE → FEEDBACK
+====================== */
+
+Course.hasMany(CourseFeedback, {
+  foreignKey: "courseId",
+  as: "feedbacks",
+  onDelete: "CASCADE",
+});
+
+CourseFeedback.belongsTo(Course, {
+  foreignKey: "courseId",
+});
+
+/* ======================
+   USER → FEEDBACK
+====================== */
+
+User.hasMany(CourseFeedback, {
+  foreignKey: "userId",
+  as: "feedbacks",
+  onDelete: "CASCADE",
+});
+
+CourseFeedback.belongsTo(User, {
+  foreignKey: "userId",
+});
+
+User.hasMany(FlashcardDeck, {
+  foreignKey: "userId",
+  as: "flashcardDecks",
+  onDelete: "CASCADE",
+});
+
+FlashcardDeck.belongsTo(User, { foreignKey: "userId" });
+
+Course.hasMany(FlashcardDeck, {
+  foreignKey: "courseId",
+  as: "flashcardDecks",
+  onDelete: "CASCADE",
+});
+
+FlashcardDeck.belongsTo(Course, { foreignKey: "courseId" });
+
+Lesson.hasMany(FlashcardDeck, {
+  foreignKey: "lessonId",
+  as: "flashcardDecks",
+  onDelete: "CASCADE",
+});
+
+FlashcardDeck.belongsTo(Lesson, { foreignKey: "lessonId" });
+
+export {
+  Course,
+  Module,
+  Lesson,
+  LessonContent,
+  User,
+  AIVideo,
+  Preference,
+  CalendarTask,
+  CourseFeedback,
+  FlashcardDeck,
+};

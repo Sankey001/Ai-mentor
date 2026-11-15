@@ -1,0 +1,249 @@
+import User from "../models/User.js";
+import Lesson from "../models/Lesson.js";
+import Preference from "../models/Preference.js";
+import { AppError, forwardError } from "../utils/error.js";
+// import { GoogleGenAI } from "@google/genai";
+import { detectIntent } from "../services/intentService.js";
+import { buildUserContext } from "../services/contextBuilder.js";
+import { askGemini } from "../services/geminiChatService.js";
+import { normalizeHistory } from "../services/chatHistory.js";
+import { detectNavigation } from "../services/navigationService.js";
+import { APP_ROUTES } from "../services/routeMap.js";
+
+// const ai = new GoogleGenAI({
+//   apiKey: process.env.GEMINI_API_KEY,
+// });
+
+export const getChatContext = async (req, res, next) => {
+  try {
+    const user = await User.findByPk(req.user.id);
+
+    const preferences = await Preference.findOne({
+      where: {
+        user_id: user.id,
+      },
+    });
+
+    return res.json({
+      user: {
+        name: user.name,
+        email: user.email,
+      },
+
+      purchasedCourses: user.purchasedCourses || [],
+
+      settings: user.settings || {},
+
+      preferences: preferences || {},
+    });
+  } catch (error) {
+    console.error(error);
+    return forwardError(
+      next,
+      res,
+      new AppError(
+        "Internal Server Error",
+        500,
+        "INTERNAL_SERVER_ERROR",
+        [],
+        error?.message || "Failed to load context",
+      ),
+    );
+  }
+};
+
+export const chatWithAssistant = async (req, res, next) => {
+  try {
+    const { message } = req.body;
+
+    if (!message || !message.trim()) {
+      return forwardError(
+        next,
+        res,
+        new AppError("Message is required", 400, "BAD_REQUEST", [], "Message is required"),
+      );
+    }
+    const { turns: history = [], error: historyError } = normalizeHistory(req.body.history);
+    if (historyError) {
+      return forwardError(
+        next,
+        res,
+        new AppError(historyError, 400, "BAD_REQUEST", [], historyError),
+      );
+    }
+
+    // Load user and preferences FIRST
+    const user = await User.findByPk(req.user.id);
+
+    if (!user) {
+      return forwardError(
+        next,
+        res,
+        new AppError("User not found", 404, "NOT_FOUND", [], "User not found"),
+      );
+    }
+
+    const userName = user.firstName || user.name || "Student";
+
+    const preferences = await Preference.findOne({
+      where: {
+        user_id: req.user.id,
+      },
+    });
+
+    // Detect intent
+    const intent = detectIntent(message);
+
+    // Navigation
+    if (intent.type === "navigation") {
+      return res.json({
+        reply: `You can open ${intent.route}`,
+        route: intent.route,
+      });
+    }
+
+    // Enrolled Courses
+    if (intent.type === "course_info") {
+      const courses = user.purchasedCourses || [];
+
+      if (!courses.length) {
+        return res.json({
+          reply: "You are not enrolled in any courses.",
+        });
+      }
+
+      const list = courses.map((course, index) => `${index + 1}. ${course.courseTitle}`).join("\n");
+
+      return res.json({
+        reply: `Hi ${userName}, you are currently enrolled in:\n\n${list}`,
+      });
+    }
+
+    // Preferences
+    if (intent.type === "preference_info") {
+      if (!preferences) {
+        return res.json({
+          reply: "No learning preferences found.",
+        });
+      }
+
+      return res.json({
+        reply: `
+        Learning Goal: ${preferences.learning_goal || "Unknown"}
+
+        Experience Level: ${preferences.experience_level || "Unknown"}
+        
+        Explanation Type: ${preferences.explanation_type || "Unknown"}
+
+        Learning Style: ${preferences.learning_style || "Unknown"}
+
+        Teaching Pace: ${preferences.teaching_pace || "Unknown"}
+
+        Example Type: ${preferences.example_type || "Unknown"}
+
+        Focus Area: ${preferences.focus_area || "Unknown"}
+        `,
+      });
+    }
+
+    // Current lesson and resume navigation
+    if (intent.type === "current_lesson") {
+      const courses = user.purchasedCourses || [];
+      const activeCourse = courses.find((course) => course.progress?.currentLesson);
+
+      if (!activeCourse) {
+        return res.json({ reply: "I couldn't find an active lesson." });
+      }
+
+      const savedLesson = activeCourse.progress.currentLesson;
+      const lessonId =
+        typeof savedLesson === "object" && savedLesson !== null
+          ? (savedLesson.lessonId ?? savedLesson.id)
+          : null;
+
+      let lessonTitle =
+        typeof savedLesson === "object" && savedLesson !== null ? savedLesson.title : null;
+
+      if (lessonId && !lessonTitle) {
+        const lesson = await Lesson.findByPk(lessonId);
+        lessonTitle = lesson?.title;
+      }
+
+      const displayLesson =
+        lessonTitle || (lessonId ? `lesson ${lessonId}` : `lesson ${savedLesson}`);
+
+      return res.json({
+        reply: `You were last studying ${displayLesson} in ${activeCourse.courseTitle}.`,
+        route: activeCourse.courseId && lessonId ? `/learning/${activeCourse.courseId}` : null,
+        lessonId: lessonId || null,
+      });
+    }
+    // Settings
+    if (intent.type === "settings_info") {
+      return res.json({
+        reply: `
+          Theme: ${user.settings?.appearance?.theme || "light"}
+          Language: ${user.settings?.appearance?.language || "en"}
+        `,
+      });
+    }
+
+    // Progress
+    if (intent.type === "progress_info") {
+      const courses = user.purchasedCourses || [];
+
+      let completedLessons = 0;
+      const courseProgress = [];
+
+      courses.forEach((course) => {
+        const completed = course.progress?.completedLessons?.length || 0;
+
+        completedLessons += completed;
+
+        courseProgress.push(`${course.courseTitle}: ${completed} completed lessons`);
+      });
+
+      return res.json({
+        reply: `Hi ${userName},
+        You are enrolled in ${courses.length} course(s).
+        Total completed lessons: ${completedLessons}
+        ${courseProgress.join("\n")}`,
+      });
+    }
+
+    const detectedRoute = detectNavigation(message);
+
+    if (detectedRoute) {
+      return res.json({
+        reply: "I can take you there.",
+        route: detectedRoute,
+      });
+    }
+
+    const context = buildUserContext(user, preferences);
+
+    const result = await askGemini(context, message, { requestId: req.id, history });
+    if (!result.ok) {
+      return res.json({ reply: result.message, route: null, error: result.category });
+    }
+    const routeMatch = result.text.match(/ROUTE:([^\r\n]*)/i);
+    const requestedRoute = routeMatch ? routeMatch[1].trim() : null;
+    const route =
+      requestedRoute && Object.values(APP_ROUTES).includes(requestedRoute) ? requestedRoute : null;
+    const cleanedReply = result.text.replace(/ROUTE:[^\r\n]*/gi, "").trim();
+    return res.json({
+      reply:
+        cleanedReply ||
+        (route
+          ? "I can take you to that page."
+          : "I couldn't generate a response. Please try asking in a different way."),
+      route,
+    });
+  } catch (error) {
+    console.error("CHAT ERROR:", error);
+
+    res.status(500).json({
+      message: "Failed to process chat",
+    });
+  }
+};

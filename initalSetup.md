@@ -1,0 +1,430 @@
+# AI Mentor — Initial Setup
+
+Follow these steps **in order**. Do not change any application code yet.
+
+## 0. What you are setting up
+
+AI Mentor is **five separate applications** that run at the same time. You need
+all five for the full product.
+
+| #   | Service           | Folder           | What it is                                     | Port | URL                        |
+| --- | ----------------- | ---------------- | ---------------------------------------------- | ---- | -------------------------- |
+| 1   | **backend**       | `backend/`       | Main API — auth, courses, payments, community  | 5000 | http://localhost:5000      |
+| 2   | **frontend**      | `frontend/`      | Learner web app                                | 5173 | http://localhost:5173      |
+| 3   | **backendAdmin**  | `backendAdmin/`  | Admin API                                      | 5001 | http://localhost:5001      |
+| 4   | **frontendAdmin** | `frontendAdmin/` | Admin dashboard                                | 5174 | http://localhost:5174      |
+| 5   | **ai_service**    | `ai_service/`    | Python service that generates AI lesson videos | 8000 | http://localhost:8000/docs |
+
+**Important:** `backend` and `backendAdmin` connect to the **same database**.
+`backend` creates the tables when it starts; `backendAdmin` does not. So
+**always start `backend` before `backendAdmin`.**
+
+---
+
+## 1. Prerequisites
+
+Check the prerequisites for the application you want to work on before starting development.
+
+> `npm run setup` checks for Node.js, npm, Python and FFmpeg for every contributor, and needs `ai_service/backend/.env` with a Gemini API key, even if you only work on one application.
+
+| Application    | Port | Connects to                          |
+| -------------- | ---- | ------------------------------------ |
+| BACKEND        | 5000 | PostgreSQL, Redis, AI SERVICE        |
+| FRONTEND       | 5173 | BACKEND                              |
+| BACKEND ADMIN  | 5001 | Same PostgreSQL database, AI SERVICE |
+| FRONTEND ADMIN | 5174 | BACKEND ADMIN                        |
+| AI SERVICE     | 8000 | Used by BACKEND and BACKEND ADMIN    |
+
+### BACKEND
+
+| Requirement                    | How to check     |
+| ------------------------------ | ---------------- |
+| Node.js 20.19+ or 22.12+       | `node -v`        |
+| npm                            | `npm -v`         |
+| PostgreSQL 15+ or Neon account | `psql --version` |
+| Git                            | `git --version`  |
+
+**Required to start:** a reachable PostgreSQL database.
+
+**Only for specific features** (the server starts without them):
+
+- Redis or Memurai on port `6379` for queued video generation (`redis-cli --version`)
+- AI SERVICE running, for AI lesson videos
+- Gemini API key, for the AI chat feature
+- Cloudinary, SMTP, Firebase, Stripe and Razorpay accounts, for uploads, emails, Google login and payments
+
+### FRONTEND
+
+| Requirement                 | How to check                                                                                 |
+| --------------------------- | -------------------------------------------------------------------------------------------- |
+| Node.js 20.19+ or 22.12+    | `node -v`                                                                                    |
+| npm                         | `npm -v`                                                                                     |
+| BACKEND started (port 5000) | Open http://localhost:5000/health/live. If BACKEND is running, it shows `{"status":"alive"}` |
+| Firebase web app            | Needed to start the dev server                                                               |
+
+**Only for specific features:** Stripe and Razorpay public keys, for checkout.
+
+### BACKEND ADMIN
+
+| Requirement                         | How to check     |
+| ----------------------------------- | ---------------- |
+| Node.js 20.19+ or 22.12+            | `node -v`        |
+| npm                                 | `npm -v`         |
+| Same PostgreSQL database as BACKEND | `psql --version` |
+| Git                                 | `git --version`  |
+
+**Required to start:** a reachable PostgreSQL database. Start BACKEND first so the tables exist.
+
+**Only for specific features:** AI SERVICE running, for syllabus generation.
+
+BACKEND ADMIN does not need Redis, Stripe, Razorpay, Firebase, Cloudinary or SMTP.
+
+### FRONTEND ADMIN
+
+| Requirement                       | How to check                                                                                       |
+| --------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Node.js 20.19+ or 22.12+          | `node -v`                                                                                          |
+| npm                               | `npm -v`                                                                                           |
+| BACKEND ADMIN started (port 5001) | Open http://localhost:5001/health/live. If BACKEND ADMIN is running, it shows `{"status":"alive"}` |
+
+### AI SERVICE
+
+| Requirement                          | How to check                |
+| ------------------------------------ | --------------------------- |
+| Python 3.11+ (available as `python`) | `python --version`          |
+| FFmpeg                               | `ffmpeg -version`           |
+| Git                                  | `git --version`             |
+| Gemini API key                       | Required by `npm run setup` |
+
+**Required to start:** FFmpeg. The service stops at startup without it.
+
+**Only for specific features:**
+
+- Groq API key, as a backup AI provider
+- Cloudinary account (all three values together), for cloud video storage
+- D-ID account, for avatar videos (the local FFmpeg renderer is used without it)
+
+Node.js and npm are needed only to run the root commands.
+
+## 2. Get the code
+
+```bash
+git clone https://github.com/Deepak3699/Ai_Mentor.git
+cd Ai_Mentor
+```
+
+---
+
+## 3. Set up the database (pick one)
+
+### Option A — Neon (recommended, no local install)
+
+1. Sign up at https://neon.tech
+2. Create a project named `AI Mentor`, region **Singapore**
+3. Copy the **connection string** from _Connection Details_
+
+It looks like this:
+
+```
+postgresql://neondb_owner:xxxxx@ep-xxxxx.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+```
+
+Keep it safe. **Never commit it to GitHub.**
+
+### Option B — Local PostgreSQL
+
+1. Install PostgreSQL and start the server
+2. Create a database:
+
+```bash
+psql -U postgres
+CREATE DATABASE ai_mentor;
+\q
+```
+
+If you use this option, fill in `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` and
+`DB_PASSWORD` in `backend/.env` and `backendAdmin/.env`, and **leave
+`NEON_DATABASE_URL` empty**.
+
+---
+
+## 4. Create the five `.env` files
+
+Each service has a template called `.env.example`. Copy each one to `.env`.
+
+Run this from the repository root:
+
+```bash
+cp backend/.env.example            backend/.env
+cp frontend/.env.example           frontend/.env
+cp backendAdmin/.env.example       backendAdmin/.env
+cp frontendAdmin/.env.example      frontendAdmin/.env
+cp ai_service/backend/.env.example ai_service/backend/.env
+```
+
+> **Note the AI service path.** The file lives at
+> `ai_service/backend/.env.example`, **not** `ai_service/.env.example`.
+
+Your structure should now look like this:
+
+```
+Ai_Mentor/
+├── backend/
+│   ├── .env.example
+│   └── .env                  <- you created this
+├── frontend/
+│   ├── .env.example
+│   └── .env                  <- you created this
+├── backendAdmin/
+│   ├── .env.example
+│   └── .env                  <- you created this
+├── frontendAdmin/
+│   ├── .env.example
+│   └── .env                  <- you created this
+└── ai_service/
+    └── backend/
+        ├── .env.example
+        └── .env              <- you created this
+```
+
+---
+
+## 5. Fill in the environment variables
+
+### 5.1 `backend/.env` — the important one
+
+**These five are required. The server will not start without them.**
+
+| Variable              | What to put                                                  | Where to get it                           |
+| --------------------- | ------------------------------------------------------------ | ----------------------------------------- |
+| `NEON_DATABASE_URL`   | Your Neon connection string                                  | Neon console → Connection Details         |
+| `JWT_SECRET`          | Any long random string, e.g. `a8f3k2m9x7q1w5e4r6t8y0u2i4o6p` | Make one up — keep it private             |
+| `STRIPE_SECRET_KEY`   | Test key, starts with `sk_test_`                             | https://dashboard.stripe.com/test/apikeys |
+| `RAZORPAY_KEY_ID`     | Test key, starts with `rzp_test_`                            | https://dashboard.razorpay.com/app/keys   |
+| `RAZORPAY_KEY_SECRET` | Test secret                                                  | Same Razorpay page                        |
+
+> Verified by testing: if `STRIPE_SECRET_KEY` is missing the server crashes with
+> `Missing STRIPE_SECRET_KEY environment variable`, and if the Razorpay keys are
+> missing it crashes with `Missing Razorpay environment variables`. Both payment
+> providers are required even if you never use them.
+
+**These are needed for specific features.** The server will start without them,
+but the feature will not work:
+
+| Variable                                                                      | Needed for              | Where to get it                                                                   |
+| ----------------------------------------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------- |
+| `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`        | Image and video uploads | https://cloudinary.com/console                                                    |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `FROM_EMAIL`, `FROM_NAME` | Password reset emails   | Gmail → Account → Security → 2-Step Verification → App Passwords                  |
+| `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`        | Google login            | Firebase console → Project settings → Service accounts → Generate new private key |
+| `STRIPE_WEBHOOK_SECRET`                                                       | Stripe webhooks         | Stripe CLI: `stripe listen` prints it                                             |
+| `AI_SERVICE_URL`                                                              | AI video generation     | Leave as `http://127.0.0.1:8000`                                                  |
+| `FRONTEND_URL`                                                                | CORS                    | Leave as `http://localhost:5173`                                                  |
+
+Leave `PORT=5000` and `AI_SERVICE_URL=http://127.0.0.1:8000` as they are.
+
+### 5.2 `frontend/.env`
+
+| Variable                            | Value                                                |
+| ----------------------------------- | ---------------------------------------------------- |
+| `VITE_API_BASE_URL`                 | `http://localhost:5000`                              |
+| `VITE_FIREBASE_API_KEY`             | Firebase console → Project settings → Web app config |
+| `VITE_FIREBASE_AUTH_DOMAIN`         | e.g. `your-project.firebaseapp.com`                  |
+| `VITE_FIREBASE_PROJECT_ID`          | e.g. `your-project`                                  |
+| `VITE_FIREBASE_STORAGE_BUCKET`      | e.g. `your-project.appspot.com`                      |
+| `VITE_FIREBASE_MESSAGING_SENDER_ID` | Numeric ID from Firebase                             |
+| `VITE_FIREBASE_APP_ID`              | From Firebase                                        |
+| `VITE_STRIPE_PUBLISHABLE_KEY`       | Stripe **publishable** key, starts with `pk_test_`   |
+| `VITE_RAZORPAY_KEY_ID`              | Same value as in `backend/.env`                      |
+
+> The first **seven** variables are mandatory. Vite refuses to start the dev
+> server if any of them is missing or still says `your_...`.
+
+### 5.3 `backendAdmin/.env`
+
+| Variable               | Value                                            |
+| ---------------------- | ------------------------------------------------ |
+| `PORT`                 | `5001`                                           |
+| `FRONTEND_ADMIN_URL`   | `http://localhost:5174`                          |
+| `AI_SERVICE_URL`       | `http://127.0.0.1:8000`                          |
+| `JWT_SECRET`           | Use the **same** value as in `backend/.env`      |
+| `NEON_DATABASE_URL`    | The **same** connection string as `backend/.env` |
+| `SUPER_ADMIN_NAME`     | Your name                                        |
+| `SUPER_ADMIN_EMAIL`    | The email you will log in with                   |
+| `SUPER_ADMIN_PASSWORD` | A strong password — remember it                  |
+
+### 5.4 `frontendAdmin/.env`
+
+```env
+VITE_API_BASE_URL=http://localhost:5001
+```
+
+> The admin API runs on **5001**. Keep this value unchanged or the admin
+> dashboard will not load its data.
+
+### 5.5 `ai_service/backend/.env`
+
+| Variable                                                               | Requirement                | Behavior when missing                                               |
+| ---------------------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------- |
+| `GEMINI_API_KEY`                                                       | Required                   | `npm run setup` and `npm run setup:ai` stop with a clear error      |
+| `GROQ_API_KEY`                                                         | Optional                   | Groq fallback is disabled; Gemini remains available                 |
+| `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | Optional as a complete set | Cloud delivery is disabled and the supported local fallback is used |
+| `DID_API_KEY`, `DID_SOURCE_URL`                                        | Optional                   | D-ID rendering is skipped and FFmpeg fallback is used               |
+
+The setup commands report only variable names and `<configured>` markers. Secret values are never printed, and existing `.env` files are never overwritten.
+
+## 6. Install dependencies
+
+From the repository root, run the complete setup:
+
+```bash
+npm run setup
+```
+
+This installs all Node/React dependencies and creates or reuses the isolated AI environment at `ai_service/.venv`.
+
+For AI-only setup:
+
+```bash
+npm run setup:ai
+```
+
+Both commands verify Python, FFmpeg, AI configuration, imports, and Redis/Memurai availability. They do not create credentials. A missing AI `.env` file or missing `GEMINI_API_KEY` stops setup with the exact remediation. Missing Redis/Memurai produces a warning because queued video generation cannot work without port `6379`.
+
+## 7. Start the services
+
+Start the complete local product from the repository root:
+
+```bash
+npm run dev
+```
+
+The runner starts or reuses all five services and displays User, Admin, and AI sections in one terminal dashboard. AI logs use the `[AI/API]` prefix.
+
+Focused alternatives:
+
+```bash
+npm run dev:user
+npm run dev:admin
+npm run dev:ai
+npm run dev:backend
+npm run dev:frontend
+npm run dev:backend-admin
+npm run dev:frontend-admin
+```
+
+`npm run dev:ai` replaces the old long Python command. If a selected service is already healthy, it is reused instead of duplicated. `Ctrl+C` stops only services started by the current terminal.
+
+## 8. Create your first admin account
+
+```bash
+cd backendAdmin
+npm run seed:superadmin
+```
+
+This creates the admin using the `SUPER_ADMIN_NAME`, `SUPER_ADMIN_EMAIL` and
+`SUPER_ADMIN_PASSWORD` from `backendAdmin/.env`.
+
+Load the included courses into a new, empty development database:
+
+```bash
+cd backend
+npm run seed:courses
+```
+
+The normal command seeds only an empty course database. If courses already exist,
+it exits successfully without deleting or duplicating data. Destructive reset mode
+is reserved for maintainers and must never be used on shared, staging, or production
+databases.
+
+---
+
+## 9. Verify that everything works
+
+Check each one. If a step fails, see the troubleshooting table below.
+
+| Check                             | How                                             | Expected result                                                                    |
+| --------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Backend liveness                  | Open http://localhost:5000/health/live          | `{"status":"alive"}`                                                               |
+| Backend readiness                 | Open http://localhost:5000/health/ready         | `{"status":"ready"}` when the database is available                                |
+| Backend connected to the database | Look at the backend terminal                    | `✅ Connected to Neon PostgreSQL using Sequelize` then `✅ Database models synced` |
+| Env vars are valid                | Look at the backend terminal                    | `✔ All environment variables are set correctly.`                                   |
+| Learner app loads                 | Open http://localhost:5173                      | The login page appears                                                             |
+| Admin liveness                    | Open http://localhost:5001/health/live          | `{"status":"alive"}`                                                               |
+| Admin readiness                   | Open http://localhost:5001/health/ready         | `{"status":"ready"}` when the database is available                                |
+| Admin panel loads                 | Open http://localhost:5174                      | The admin login page appears                                                       |
+| Admin login works                 | Log in with your super admin email and password | You reach the dashboard and see data                                               |
+| AI service is up                  | Open http://localhost:8000                      | `{"message":"AI Lesson Generator Backend Running"}`                                |
+| AI service docs                   | Open http://localhost:8000/docs                 | The Swagger UI appears                                                             |
+
+### Test the full flow once
+
+1. Open http://localhost:5173
+2. Sign up with an email and password
+3. Complete your profile (bio and avatar)
+4. Browse a course and open its preview
+5. Log in to http://localhost:5174 as the admin and confirm the new user shows
+   up under Users
+
+---
+
+## 10. Troubleshooting
+
+| Error                                                                          | Cause                                                               | Fix                                                                               |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `Missing STRIPE_SECRET_KEY environment variable`                               | `STRIPE_SECRET_KEY` not set                                         | Add it to `backend/.env` — even a test key will do                                |
+| `Missing Razorpay environment variables: RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET` | Razorpay keys not set                                               | Add both to `backend/.env`                                                        |
+| `Environment Variable Error — Frontend` and Vite exits                         | A `VITE_` variable is missing or still says `your_...`              | Check `frontend/.env` against section 5.2                                         |
+| `Unable to connect: ... SequelizeConnectionRefusedError`                       | Database not reachable                                              | Check `NEON_DATABASE_URL`. For local Postgres, confirm the server is running      |
+| `❌ GEMINI_API_KEY not found in .env`                                          | Wrong `.env` location or empty value                                | The file must be `ai_service/backend/.env`                                        |
+| `❌ GROQ_API_KEY not found in .env`                                            | Groq key missing                                                    | Get a free key at https://console.groq.com/keys                                   |
+| `❌ Cloudinary credentials missing.`                                           | One of the three Cloudinary values is empty                         | All three must be set                                                             |
+| `ModuleNotFoundError: No module named 'config'`                                | Started uvicorn from `ai_service/` instead of `ai_service/backend/` | `cd ai_service/backend` first                                                     |
+| `FFmpeg not found`                                                             | FFmpeg not installed or not on PATH                                 | Install it, restart the terminal, then run `npm run setup:ai`                     |
+| `Missing AI environment file`                                                  | `ai_service/backend/.env` does not exist                            | Copy `.env.example` to `.env`, configure Gemini, then rerun setup                 |
+| `GEMINI_API_KEY is not configured`                                             | Required Gemini key is empty or still a placeholder                 | Add a real key without sharing it, then rerun setup                               |
+| Redis warning or video jobs remain queued                                      | Redis/Memurai is not listening on port `6379`                       | Start Redis/Memurai, then restart `npm run dev`                                   |
+| A service is already running                                                   | The selected port already has a healthy service                     | The root runner reuses healthy User/Admin API and WEB services automatically      |
+| `Not allowed by CORS` in the browser console                                   | `FRONTEND_URL` does not match the browser address                   | In `backend/.env`, set `FRONTEND_URL=http://localhost:5173`                       |
+| Admin panel loads but every page is empty                                      | `VITE_API_BASE_URL` points to 5000                                  | Set it to `http://localhost:5001` in `frontendAdmin/.env` and restart Vite        |
+| Google login does nothing                                                      | Firebase keys missing or invalid                                    | Check `FIREBASE_PRIVATE_KEY` in `backend/.env` — it must keep the `\n` characters |
+| PowerShell blocks the venv activation                                          | Execution policy                                                    | `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`            |
+
+---
+
+## 11. Final checklist
+
+Tick every box before you move on to real work.
+
+- [ ] Node 18+, Python 3.10+, FFmpeg and Git installed
+- [ ] Database created (Neon project, or local `ai_mentor` database)
+- [ ] `backend/.env` created with `NEON_DATABASE_URL`, `JWT_SECRET`, `STRIPE_SECRET_KEY`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`
+- [ ] `frontend/.env` created with the API URL and all six Firebase values
+- [ ] `backendAdmin/.env` created with the **same** database URL and JWT secret
+- [ ] `frontendAdmin/.env` created with `VITE_API_BASE_URL=http://localhost:5001`
+- [ ] `ai_service/backend/.env` created with required Gemini key; optional providers configured as needed
+- [ ] `npm run setup` completed from the repository root
+- [ ] `npm run setup` or `npm run setup:ai` created/reused `ai_service/.venv` and installed requirements
+- [ ] All five services started or reused with `npm run dev`
+- [ ] http://localhost:5000/health/live reports `{"status":"alive"}`
+- [ ] http://localhost:5000/health/ready reports `{"status":"ready"}` when the database is available
+- [ ] http://localhost:5001/health/live reports `{"status":"alive"}`
+- [ ] http://localhost:5001/health/ready reports `{"status":"ready"}` when the database is available
+- [ ] http://localhost:8000/docs opens
+- [ ] Admin seeded with `npm run seed:superadmin`
+- [ ] Included courses seeded once with `npm run seed:courses` on the new empty database
+- [ ] Logged in to both the learner app and the admin panel
+- [ ] No `.env` file appears in `git status`
+
+---
+
+## 12. Rules
+
+- **Never commit a `.env` file.** Only `.env.example` files belong in git.
+  Run `git status` before every commit. If a `.env` shows up, you have a problem.
+- **Never paste an API key into the group chat, a PR, or a screenshot.**
+- Ask before changing application code during setup.
+
+---
+
+**Setup taking longer than expected? Send the error message or a screenshot to
+your team lead before changing anything manually.**

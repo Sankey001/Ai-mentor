@@ -1,0 +1,826 @@
+// backend/controller/userController.js
+import User from "../models/User.js";
+import CommunityPost from "../models/CommunityPost.js";
+import Notifications from "../models/Notification.js";
+import { Transaction } from "sequelize";
+import cloudinary from "../config/cloudinary.js";
+import fs from "fs";
+import path from "path";
+import { formatFullName } from "../utils/userUtils.js";
+import { createNotification } from "./notificationController.js";
+import { Course } from "../models/modelAssociations.js";
+import Payment from "../models/Payment.js";
+import { sequelize } from "../config/db.js";
+import {
+  AppError,
+  BadRequestError,
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+  UnauthorizedError,
+  forwardError,
+} from "../utils/error.js";
+
+// Centralized logic moved to userUtils.js
+
+// @desc Change Password
+const changePassword = async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!req.user) {
+      return forwardError(next, res, new UnauthorizedError("Not authorized"));
+    }
+
+    const user = await User.findByPk(req.user.id);
+
+    if (!user) {
+      return forwardError(next, res, new NotFoundError("User not found"));
+    }
+
+    if (!user.password) {
+      return forwardError(next, res, new BadRequestError("Password is not set for this account"));
+    }
+
+    const isMatch = await user.matchPassword(currentPassword);
+
+    if (!isMatch) {
+      return forwardError(next, res, new BadRequestError("Current password incorrect"));
+    }
+
+    user.password = newPassword;
+    user.passwordChangedAt = new Date();
+
+    await user.save();
+
+    res.json({ message: "Password updated successfully" });
+  } catch (error) {
+    console.error("CHANGE PASSWORD ERROR:", error);
+    return forwardError(
+      next,
+      res,
+      new AppError(
+        "Internal Server Error",
+        500,
+        "INTERNAL_SERVER_ERROR",
+        [],
+        error?.message || "Server error",
+      ),
+    );
+  }
+};
+
+// @desc Get profile
+const getUserProfile = async (req, res, next) => {
+  try {
+    if (!req.user) {
+      return forwardError(next, res, new UnauthorizedError("Not authorized"));
+    }
+
+    const user = await User.findByPk(req.user.id);
+    if (!user) return forwardError(next, res, new NotFoundError("User not found"));
+
+    res.json({
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      bio: user.bio,
+      avatar_url: user.avatar_url,
+      isProfileComplete: user.isProfileComplete,
+      isGoogleUser: !!user.googleId,
+      googleId: user.googleId,
+      hasPassword: !!user.password,
+      purchasedCourses: user.purchasedCourses,
+    });
+  } catch (error) {
+    console.error("PROFILE ERROR:", error);
+    return forwardError(
+      next,
+      res,
+      new AppError(
+        "Internal Server Error",
+        500,
+        "INTERNAL_SERVER_ERROR",
+        [],
+        error?.message || "Server error",
+      ),
+    );
+  }
+};
+
+// @desc Enroll in a free course (paid courses require a completed payment)
+const purchaseCourse = async (req, res, next) => {
+  try {
+    if (!req.user) return forwardError(next, res, new UnauthorizedError("Not authorized"));
+
+    const { courseId } = req.body;
+    const normalizedCourseId = Number(courseId);
+
+    if (!courseId || !Number.isInteger(normalizedCourseId)) {
+      return forwardError(next, res, new BadRequestError("Course ID is required"));
+    }
+
+    // Load the authoritative course record — never trust client-supplied data.
+    const course = await Course.findByPk(normalizedCourseId);
+    if (!course || course.status === "deleted") {
+      return forwardError(next, res, new NotFoundError("Course not found"));
+    }
+
+    if (course.status !== "published") {
+      return forwardError(next, res, new ForbiddenError("This course is not currently available."));
+    }
+
+    const isPaid = Number(course.priceValue || 0) > 0;
+
+    // Enroll atomically: the user row is locked for the duration of the
+    // duplicate check and save so concurrent requests cannot both pass the
+    // check and append two access records.
+    const transaction = await sequelize.transaction();
+    let enrolledUserId;
+    let purchasedCourses;
+
+    try {
+      const user = await User.findByPk(req.user.id, {
+        transaction,
+        lock: Transaction.LOCK.UPDATE,
+      });
+
+      if (!user) {
+        await transaction.rollback();
+        return forwardError(next, res, new NotFoundError("User not found"));
+      }
+
+      purchasedCourses = user.purchasedCourses || [];
+
+      // Prevent duplicate enrollment
+      const alreadyPurchased = purchasedCourses.some(
+        (c) => Number(c.courseId) === normalizedCourseId,
+      );
+
+      if (alreadyPurchased) {
+        await transaction.rollback();
+        return forwardError(next, res, new ConflictError("Already enrolled"));
+      }
+
+      // Paid courses may only be enrolled once a payment has completed successfully.
+      if (isPaid) {
+        const completedPayment = await Payment.findOne({
+          where: { userId: user.id, courseId: normalizedCourseId, status: "success" },
+          transaction,
+        });
+
+        if (!completedPayment) {
+          await transaction.rollback();
+          return forwardError(
+            next,
+            res,
+            new ForbiddenError(
+              "Payment required. Please complete payment before enrolling in this course.",
+            ),
+          );
+        }
+      }
+
+      // Add course using the database title, not the client-supplied one
+      purchasedCourses.push({
+        courseId: normalizedCourseId,
+        courseTitle: course.title,
+        purchaseDate: new Date(),
+        progress: {
+          completedLessons: [],
+          currentLesson: null,
+        },
+      });
+
+      user.purchasedCourses = purchasedCourses;
+
+      // Important for Sequelize JSON/JSONB update
+      user.changed("purchasedCourses", true);
+
+      await user.save({ transaction });
+
+      await transaction.commit();
+      enrolledUserId = user.id;
+    } catch (error) {
+      if (!transaction.finished) {
+        await transaction.rollback();
+      }
+      throw error;
+    }
+
+    // Best-effort notification; must not undo a committed enrollment.
+    try {
+      await createNotification(enrolledUserId, {
+        title: "Course Enrolled 🎉",
+        message: `You successfully enrolled in ${course.title}`,
+        type: "course",
+        metadata: { courseId: normalizedCourseId },
+      });
+    } catch (notificationError) {
+      console.error("ENROLLMENT NOTIFICATION ERROR:", notificationError);
+    }
+
+    return res.status(200).json({
+      message: "Course enrolled successfully",
+      purchasedCourses,
+    });
+  } catch (error) {
+    console.error("PURCHASE ERROR:", error);
+    return forwardError(
+      next,
+      res,
+      new AppError(
+        "Internal Server Error",
+        500,
+        "INTERNAL_SERVER_ERROR",
+        [],
+        error?.message || "Server error",
+      ),
+    );
+  }
+};
+
+// @desc Update progress
+const updateCourseProgress = async (req, res, next) => {
+  try {
+    if (!req.user) return forwardError(next, res, new UnauthorizedError("Not authorized"));
+
+    const user = await User.findByPk(req.user.id);
+    if (!user) return forwardError(next, res, new NotFoundError("User not found"));
+
+    const { courseId, lessonData, currentLesson, completedLesson } = req.body;
+
+    let courses = [...(user.purchasedCourses || [])];
+    let courseIndex = courses.findIndex((c) => Number(c.courseId) === Number(courseId));
+
+    if (courseIndex !== -1) {
+      let progress = courses[courseIndex].progress || {
+        completedLessons: [],
+        currentLesson: null,
+        lessonData: {},
+      };
+
+      if (!progress.lessonData) progress.lessonData = {};
+
+      if (lessonData && lessonData.lessonId) {
+        progress.lessonData[lessonData.lessonId] = {
+          ...progress.lessonData[lessonData.lessonId],
+          ...lessonData.data,
+        };
+      }
+
+      if (currentLesson) {
+        progress.currentLesson = currentLesson;
+      }
+
+      if (
+        completedLesson &&
+        !progress.completedLessons.some((l) => l.lessonId === completedLesson.lessonId)
+      ) {
+        progress.completedLessons.push(completedLesson);
+      }
+
+      courses[courseIndex].progress = progress;
+      user.set("purchasedCourses", courses);
+
+      user.changed("purchasedCourses", true);
+    }
+
+    user.analytics = user.analytics || {
+      totalHours: 0,
+      daysStudied: 0,
+      completedCourses: 0,
+      certificates: 0,
+      studySessions: [],
+      learningHoursChart: [],
+    };
+
+    await user.save();
+    res.json({
+      message: "Progress updated successfully",
+      purchasedCourses: user.purchasedCourses,
+    });
+  } catch (error) {
+    console.error("PROGRESS ERROR:", error);
+    return forwardError(
+      next,
+      res,
+      new AppError(
+        "Internal Server Error",
+        500,
+        "INTERNAL_SERVER_ERROR",
+        [],
+        error?.message || "Server error",
+      ),
+    );
+  }
+};
+
+const getWatchedVideos = async (req, res, next) => {
+  try {
+    const user = await User.findByPk(req.user.id);
+
+    if (!user) {
+      return forwardError(next, res, new NotFoundError("User not found"));
+    }
+
+    const courses = user.purchasedCourses || [];
+
+    const watchedVideos = [];
+    const uniqueCourses = new Map();
+
+    let totalSeconds = 0;
+    let completedCount = 0;
+
+    courses.forEach((course) => {
+      const progress = course.progress || {};
+      const lessonData = progress.lessonData || {};
+
+      Object.keys(lessonData).forEach((lessonId) => {
+        const lesson = lessonData[lessonId];
+
+        if (!lesson?.watchHistory) return;
+
+        const watchHistory = lesson.watchHistory;
+
+        const safeProgress = Number(
+          Math.max(0, Math.min(100, watchHistory.progressPercent || 0)).toFixed(1),
+        );
+        watchedVideos.push({
+          lessonId,
+          courseId: course.courseId,
+          course: course.courseTitle || "Course",
+          title: watchHistory.title || "Untitled Lesson",
+          thumbnail: watchHistory.thumbnail,
+          progress: Number(safeProgress.toFixed(1)),
+          currentTime: watchHistory.currentTime || 0,
+          duration: watchHistory.duration || 0,
+          formattedDuration: watchHistory.formattedDuration || "0:00",
+          lastWatched: watchHistory.lastWatched,
+          status: watchHistory.status || "in-progress",
+        });
+
+        const courseId = String(course.courseId);
+        const courseTitle = course.courseTitle || "Course";
+        if (!uniqueCourses.has(courseId)) {
+          uniqueCourses.set(courseId, { id: course.courseId, title: courseTitle });
+        }
+
+        if (watchHistory.currentTime > 0) {
+          totalSeconds += watchHistory.currentTime;
+        }
+
+        if (watchHistory.status === "completed" || safeProgress >= 80) {
+          completedCount++;
+        }
+      });
+    });
+
+    const uniqueDays = new Set();
+
+    watchedVideos.forEach((video) => {
+      if (video.lastWatched) {
+        const day = new Date(video.lastWatched).toDateString();
+        uniqueDays.add(day);
+      }
+    });
+
+    const avgSeconds = watchedVideos.length > 0 ? totalSeconds / watchedVideos.length : 0;
+
+    const avgMinutes = Math.floor(avgSeconds / 60);
+    const avgRemainingSeconds = Math.floor(avgSeconds % 60);
+
+    const metrics = {
+      totalHours: (totalSeconds / 3600).toFixed(1),
+      videosCompleted: completedCount,
+      avgSession: `${avgMinutes}m ${avgRemainingSeconds}s`,
+      learningStreak: `${uniqueDays.size} days`,
+    };
+
+    res.json({
+      videos: watchedVideos,
+      metrics,
+      courses: [...uniqueCourses.values()],
+    });
+  } catch (error) {
+    console.error("Failed to fetch watched videos:", error);
+    return forwardError(
+      next,
+      res,
+      new AppError(
+        "Internal Server Error",
+        500,
+        "INTERNAL_SERVER_ERROR",
+        [],
+        error?.message || "Server error",
+      ),
+    );
+  }
+};
+
+const getUserSettings = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+
+    const user = await User.findByPk(userId);
+
+    if (!user) {
+      return forwardError(next, res, new NotFoundError("User not found"));
+    }
+
+    res.json(user.settings);
+  } catch (error) {
+    console.error("Failed to fetch settings:", error);
+    return forwardError(
+      next,
+      res,
+      new AppError(
+        "Internal Server Error",
+        500,
+        "INTERNAL_SERVER_ERROR",
+        [],
+        error?.message || "Failed to fetch settings",
+      ),
+    );
+  }
+};
+
+const updateUserSettings = async (req, res, next) => {
+  try {
+    const user = await User.findByPk(req.user.id);
+
+    if (!user) {
+      return forwardError(next, res, new NotFoundError("User not found"));
+    }
+
+    const { notifications, security, appearance } = req.body;
+
+    user.settings = {
+      ...user.settings,
+      notifications: notifications
+        ? { ...user.settings.notifications, ...notifications }
+        : user.settings.notifications,
+      security: security ? { ...user.settings.security, ...security } : user.settings.security,
+      appearance: appearance
+        ? { ...user.settings.appearance, ...appearance }
+        : user.settings.appearance,
+    };
+
+    await user.save();
+
+    res.json({
+      message: "Settings updated successfully",
+      settings: user.settings,
+    });
+  } catch (error) {
+    console.error("Failed to update settings:", error);
+    return forwardError(
+      next,
+      res,
+      new AppError(
+        "Internal Server Error",
+        500,
+        "INTERNAL_SERVER_ERROR",
+        [],
+        error?.message || "Failed to update settings",
+      ),
+    );
+  }
+};
+
+const removeProfileAvatar = async (req, res, next) => {
+  try {
+    if (!req.user) {
+      return forwardError(next, res, new UnauthorizedError("Not authorized"));
+    }
+    const user = await User.findByPk(req.user.id);
+    if (!user) {
+      return forwardError(next, res, new NotFoundError("User not found"));
+    }
+
+    const previousAvatar = user.avatar_url;
+    if (previousAvatar?.startsWith("/uploads/")) {
+      const filename = path.basename(previousAvatar);
+      const uploadRoot = path.resolve("uploads");
+      const avatarPath = path.resolve(uploadRoot, filename);
+      if (path.dirname(avatarPath) !== uploadRoot) {
+        return forwardError(next, res, new BadRequestError("Invalid avatar path"));
+      }
+      try {
+        await fs.promises.unlink(avatarPath);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
+
+    user.avatar_url = null;
+    await user.save();
+    return res.status(200).json({
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      bio: user.bio,
+      avatar_url: null,
+      isProfileComplete: user.isProfileComplete,
+      isGoogleUser: !!user.googleId,
+      hasPassword: !!user.password,
+      purchasedCourses: user.purchasedCourses,
+    });
+  } catch (error) {
+    console.error("REMOVE PROFILE AVATAR ERROR:", error);
+    return forwardError(
+      next,
+      res,
+      new AppError(
+        "Internal Server Error",
+        500,
+        "INTERNAL_SERVER_ERROR",
+        [],
+        error?.message || "Failed to remove profile photo",
+      ),
+    );
+  }
+};
+
+const updateUserProfile = async (req, res, next) => {
+  try {
+    if (!req.user) {
+      return forwardError(next, res, new UnauthorizedError("Not authorized"));
+    }
+
+    const user = await User.findByPk(req.user.id);
+    if (!user) {
+      return forwardError(next, res, new NotFoundError("User not found"));
+    }
+
+    // Avatar Upload Handling
+    if (req.file) {
+      user.avatar_url = `/uploads/${req.file.filename}`;
+    }
+
+    // Update text fields
+    user.firstName = req.body.firstName ?? user.firstName;
+    user.lastName = req.body.lastName ?? user.lastName;
+    user.name = formatFullName(user.firstName, user.lastName);
+    // Check email change
+    if (req.body.email && req.body.email.trim().toLowerCase() !== user.email.trim().toLowerCase()) {
+      const emailExists = await User.findOne({
+        where: {
+          email: req.body.email.trim().toLowerCase(),
+        },
+      });
+      if (emailExists) {
+        if (req.file?.path) {
+          fs.unlink(req.file.path, () => {});
+        }
+        return forwardError(next, res, new ConflictError("Email already in use"));
+      }
+      user.email = req.body.email.trim().toLowerCase();
+    }
+    user.bio = req.body.bio ?? user.bio;
+
+    await user.save();
+
+    res.status(200).json({
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      bio: user.bio,
+      avatar_url: user.avatar_url,
+      isProfileComplete: user.isProfileComplete,
+      isGoogleUser: !!user.googleId,
+      hasPassword: !!user.password,
+      purchasedCourses: user.purchasedCourses,
+    });
+  } catch (error) {
+    if (req.file?.path) {
+      fs.unlink(req.file.path, () => {});
+    }
+    console.error("UPDATE PROFILE ERROR:", error);
+    return forwardError(
+      next,
+      res,
+      new AppError(
+        "Internal Server Error",
+        500,
+        "INTERNAL_SERVER_ERROR",
+        [],
+        error?.message || "Server error",
+      ),
+    );
+  }
+};
+
+// DEV / ADMIN ONLY
+const removePurchasedCourse = async (req, res, next) => {
+  try {
+    const { courseId } = req.body;
+
+    const user = await User.findByPk(req.user.id);
+    if (!user) return forwardError(next, res, new NotFoundError("User not found"));
+
+    user.purchasedCourses = user.purchasedCourses.filter(
+      (c) => Number(c.courseId) !== Number(courseId),
+    );
+
+    await user.save();
+
+    res.json({ message: "Course removed successfully" });
+  } catch (error) {
+    console.error("REMOVE COURSE ERROR:", error);
+    return forwardError(
+      next,
+      res,
+      new AppError(
+        "Internal Server Error",
+        500,
+        "INTERNAL_SERVER_ERROR",
+        [],
+        error?.message || "Server error",
+      ),
+    );
+  }
+};
+
+// Delete User Account
+const deleteAccount = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+
+    await sequelize.transaction(async (transaction) => {
+      await CommunityPost.destroy({
+        where: { userId },
+        transaction,
+      });
+
+      await Notifications.destroy({
+        where: { userId },
+        transaction,
+      });
+
+      await User.destroy({
+        where: { id: userId },
+        transaction,
+      });
+    });
+
+    // External cleanup happens after the database transaction commits.
+    try {
+      const avatarPublicId = `user_avatars/user_${userId}`;
+      await cloudinary.uploader.destroy(avatarPublicId);
+    } catch (cloudinaryError) {
+      console.error("Cloudinary avatar deletion error:", cloudinaryError);
+    }
+
+    res.status(200).json({
+      message: "Account Deleted Successfully",
+    });
+  } catch (error) {
+    console.error("Delete Account Error", error);
+    return forwardError(
+      next,
+      res,
+      new AppError(
+        "Internal Server Error",
+        500,
+        "INTERNAL_SERVER_ERROR",
+        [],
+        error?.message || "Failed to delete account",
+      ),
+    );
+  }
+};
+// Complete first-time user profile onboarding
+// Google users: firstName, lastName, password (required), bio, avatar
+// Email users: bio, avatar
+const completeProfile = async (req, res, next) => {
+  try {
+    const user = await User.findByPk(req.user.id);
+    if (!user) return forwardError(next, res, new NotFoundError("User not found"));
+
+    // Prevent re-completion for already completed profiles
+    if (user.isProfileComplete) {
+      // Return gracefully instead of erroring, letting the frontend handle redirection
+      return res.json({
+        id: user.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        bio: user.bio,
+        avatar_url: user.avatar_url,
+        isProfileComplete: user.isProfileComplete,
+        purchasedCourses: user.purchasedCourses,
+      });
+    }
+
+    const { firstName, lastName, password, bio } = req.body;
+
+    // Apply missing fields if provided
+    if (firstName && firstName.trim() !== "") {
+      user.firstName = firstName;
+    }
+    if (lastName && lastName.trim() !== "") {
+      user.lastName = lastName;
+    }
+    if (user.firstName || user.lastName) {
+      user.name = formatFullName(user.firstName, user.lastName);
+    }
+    if (password && password.length >= 6 && !!user.googleId) {
+      user.password = password; // strictly handled by beforeSave hook!
+    }
+
+    // All users: bio (required if not already set)
+    if (bio && bio.trim().length > 0) {
+      user.bio = bio;
+    } else if (!user.bio || user.bio.trim().length === 0) {
+      return forwardError(next, res, new BadRequestError("Bio is required"));
+    }
+
+    // Avatar upload via Cloudinary (required if not already set)
+    // Store image locally instead of Cloudinary
+    if (req.file) {
+      user.avatar_url = `/uploads/${req.file.filename}`;
+    } else if (!user.avatar_url) {
+      return forwardError(next, res, new BadRequestError("Profile photo is required"));
+    }
+
+    user.isProfileComplete = true; // Temporary flag to trigger save check
+    await user.save();
+
+    // Final safety check: if the hook found it's STILL incomplete, return a list of missing fields.
+    if (!user.isProfileComplete) {
+      const missingFields = [];
+      if (!user.firstName) missingFields.push("First Name");
+      if (!user.lastName) missingFields.push("Last Name");
+      if (!user.bio) missingFields.push("Bio");
+      if (!user.avatar_url) missingFields.push("Profile Photo");
+      if (user.googleId && !user.password) missingFields.push("Password");
+
+      return forwardError(
+        next,
+        res,
+        new BadRequestError(
+          `Profile is still incomplete. Missing: ${missingFields.join(", ")}`,
+          null,
+          [{ field: "profile", message: `Missing: ${missingFields.join(", ")}` }],
+        ),
+      );
+    }
+
+    res.json({
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      bio: user.bio,
+      avatar_url: user.avatar_url,
+      isProfileComplete: user.isProfileComplete,
+      isGoogleUser: !!user.googleId,
+      googleId: user.googleId,
+      hasPassword: !!user.password,
+      purchasedCourses: user.purchasedCourses,
+    });
+  } catch (error) {
+    console.error("COMPLETE PROFILE ERROR:", error);
+    return forwardError(
+      next,
+      res,
+      new AppError(
+        "Internal Server Error",
+        500,
+        "INTERNAL_SERVER_ERROR",
+        [],
+        error?.message || "Server error",
+      ),
+    );
+  }
+};
+
+// EXPORTS
+export {
+  getUserProfile,
+  purchaseCourse,
+  updateCourseProgress,
+  getUserSettings,
+  getWatchedVideos,
+  updateUserSettings,
+  updateUserProfile,
+  removeProfileAvatar,
+  removePurchasedCourse,
+  deleteAccount,
+  changePassword,
+  completeProfile,
+};

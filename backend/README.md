@@ -1,0 +1,365 @@
+# AI Mentor — Backend (Node.js API)
+
+The Express.js REST API backend for the **AI Mentor** learning platform. It handles authentication, course management, user data, community posts, analytics, and acts as a secure proxy to the Python AI service.
+
+---
+
+## ✨ Features
+
+| Feature              | Description                                                                                               |
+| -------------------- | --------------------------------------------------------------------------------------------------------- |
+| 🔐 Authentication    | JWT-based auth, Email/Password register & login, Google OAuth (Firebase), Forgot/Reset Password via Email |
+| 📚 Course Management | CRUD for courses and lessons (Admin), purchase tracking per user                                          |
+| 🤖 AI Video Proxy    | Secure bridge between frontend and Python AI service; video caching in DB                                 |
+| 💬 Community Posts   | Create, read, and manage community discussion posts                                                       |
+| 📊 Analytics         | User activity and course progress analytics                                                               |
+| 📌 Sidebar           | Dynamic sidebar navigation data endpoint                                                                  |
+| 📧 Email             | Password reset emails via Nodemailer                                                                      |
+| ☁️ Cloudinary        | Cloud storage integration for media uploads                                                               |
+
+---
+
+## 🛠 Tech Stack
+
+| Layer         | Technology                      |
+| ------------- | ------------------------------- |
+| Runtime       | Node.js (ESM)                   |
+| Framework     | Express.js v4                   |
+| ORM           | Sequelize v6                    |
+| Database      | PostgreSQL                      |
+| Auth          | JWT (`jsonwebtoken`) + bcryptjs |
+| Email         | Nodemailer                      |
+| File Upload   | Multer                          |
+| Cloud Storage | Cloudinary SDK                  |
+| Dev Server    | Nodemon                         |
+
+---
+
+## 📁 Project Structure
+
+```
+backend/
+├── config/
+│   └── db.js                    # Sequelize + PostgreSQL connection
+├── controllers/
+│   ├── analyticsController.js   # Analytics query logic
+│   ├── communityController.js   # Community post CRUD
+│   ├── courseController.js      # Course/lesson logic + title helpers
+│   ├── discussionController.js  # (Legacy) Discussion CRUD
+│   ├── sidebarController.js     # Sidebar data
+│   └── userController.js        # User profile management
+├── middleware/
+│   └── authMiddleware.js        # JWT protect middleware
+├── models/
+│   ├── AIVideo.js               # Cached AI-generated video records
+│   ├── CommunityPost.js         # Community post model
+│   ├── Course.js                # Course model
+│   ├── Discussion.js            # Discussion model
+│   └── User.js                  # User model (with bcrypt hooks)
+├── routes/
+│   ├── auth.js                  # /api/auth — register, login, Google auth, password reset
+│   ├── userRoutes.js            # /api/users — profile, avatar, course purchases
+│   ├── courseRoutes.js          # /api/courses — course catalogue, lesson data
+│   ├── aiRoutes.js              # /api/ai — AI video generation proxy & transcripts
+│   ├── communityRoutes.js       # /api/community — community posts
+│   ├── analyticsRoutes.js       # /api/analytics — learning analytics
+│   └── sidebarRoutes.js         # /api/sidebar — sidebar data
+├── scripts/                     # Utility/seed scripts
+├── utils/
+│   └── sendEmail.js             # Nodemailer email utility
+├── videos/                      # Local video static directory
+├── .env.example                 # Environment variable template
+├── server.js                    # App entry point
+└── package.json
+```
+
+---
+
+## ⚙️ Environment Variables
+
+Copy `.env.example` to `.env` and fill in the values. This project expects a single Postgres connection string from Neon (or any hosted Postgres) in `DATABASE_URL`.
+
+```env
+# Complete Postgres connection string from Neon or your cloud provider
+# Example (replace with your actual Neon connection string):
+# NEON_DATABASE_URL=postgres://neondb_owner:password@ep-postgres-host.neon.tech:5432/neondb?sslmode=require
+NEON_DATABASE_URL=your_neon_database_url
+
+# Express server port
+PORT=5000
+
+# JWT secret key
+JWT_SECRET=your_jwt_secret_key
+
+# Python AI service URL (use deployed AI service URL or local URL during development)
+AI_SERVICE_URL=http://127.0.0.1:8000
+# Queued video generation also requires Redis/Memurai on 127.0.0.1:6379
+
+# Frontend URL (for CORS and password reset emails)
+FRONTEND_URL=http://localhost:5173
+
+# Cloudinary credentials
+CLOUDINARY_CLOUD_NAME=your_cloud_name
+CLOUDINARY_API_KEY=your_api_key
+CLOUDINARY_API_SECRET=your_api_secret
+```
+
+---
+
+> **Repository-root workflow:** Use `npm run setup` for the complete project or `npm run setup:ai` for AI only. Use `npm run dev` to start all five services, `npm run dev:user` for the learner application, `npm run dev:backend` for this API only, or `npm run dev:ai` for the AI service only.
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- Node.js v18+
+- An active Neon (or other hosted Postgres) project and its connection string
+- npm
+
+### Installation (Neon)
+
+```bash
+# From the project root
+cd backend
+
+# Install dependencies
+npm install
+
+# Copy and configure environment
+cp .env.example .env
+# Edit .env and set DATABASE_URL to the Neon connection string
+
+# Start in development mode (with auto-reload)
+npm run dev
+```
+
+The API will be available at **http://localhost:5000**.
+
+### Initial course data
+
+For a new, empty development database, run `npm run seed:courses` once from
+`backend/`. The normal command skips safely if courses already exist, so it does
+not delete or duplicate existing course data.
+
+Destructive reset mode is restricted to maintainers and must not be used on
+shared, staging, or production databases.
+
+### Available Scripts
+
+| Script                 | Description                                                  |
+| ---------------------- | ------------------------------------------------------------ |
+| `npm run dev`          | Start with Nodemon (auto-restart on changes)                 |
+| `npm start`            | Start the production server                                  |
+| `npm run lint`         | Run ESLint to check for code issues                          |
+| `npm run seed:courses` | Seed included courses only when the course database is empty |
+
+---
+
+## 🗄️ Database Setup (Neon)
+
+The backend uses **Sequelize** with PostgreSQL and expects a full connection string in `DATABASE_URL`.
+
+1. Create a Neon project at https://neon.tech and create or use the default branch.
+2. From the Neon dashboard, copy the Postgres connection string (the `postgres://...` URL). Make sure the string includes SSL (Neon requires SSL / `sslmode=require`).
+3. Paste the Neon connection string into `DATABASE_URL` inside your `.env`.
+4. On server startup, Sequelize will **sync all models** (`sequelize.sync({ alter: true })`), creating or altering tables as needed.
+
+Notes:
+
+- If you need a separate read-only or replica connection, obtain the appropriate URL from Neon and set additional env vars as needed.
+- For production, follow Neon best practices: restrict branch access, use the recommended role, and rotate credentials as required.
+
+---
+
+## 📡 API Endpoints
+
+### Auth — `/api/auth`
+
+| Method | Endpoint                 | Description                                    |
+| ------ | ------------------------ | ---------------------------------------------- |
+| `POST` | `/register`              | Register a new user (email + password)         |
+| `POST` | `/login`                 | Login with email & password → returns JWT      |
+| `POST` | `/google-login`          | Login/register via Firebase Google OAuth token |
+| `POST` | `/forgot-password`       | Send password reset email                      |
+| `POST` | `/reset-password/:token` | Reset password using token from email          |
+
+### Users — `/api/users`
+
+| Method | Endpoint              | Description                       | Auth |
+| ------ | --------------------- | --------------------------------- | ---- |
+| `GET`  | `/profile`            | Get current user profile          | ✅   |
+| `PUT`  | `/profile`            | Update name, bio, profile picture | ✅   |
+| `POST` | `/purchase/:courseId` | Purchase a course                 | ✅   |
+
+### Courses — `/api/courses`
+
+| Method | Endpoint | Description                     |
+| ------ | -------- | ------------------------------- |
+| `GET`  | `/`      | List all courses                |
+| `GET`  | `/:id`   | Get course details with lessons |
+
+### AI Video — `/api/ai`
+
+| Method | Endpoint                     | Description                                                                                                         | Auth |
+| ------ | ---------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---- |
+| `POST` | `/generate-video`            | Generate an AI lesson video (with DB caching)                                                                       | ✅   |
+| `GET`  | `/status/:jobId`             | Poll generation job status                                                                                          | ✅   |
+| `GET`  | `/transcript/:filename`      | Fetch transcript text (with DB caching)                                                                             | —    |
+| `GET`  | `/video/:courseId/:filename` | Proxy video stream from AI service (must be enrolled in `courseId`; 404 if the file does not belong to that course) | ✅   |
+
+### Community — `/api/community`
+
+| Method | Endpoint | Description          | Auth |
+| ------ | -------- | -------------------- | ---- |
+| `GET`  | `/`      | List community posts | ✅   |
+| `POST` | `/`      | Create a new post    | ✅   |
+
+### Analytics — `/api/analytics`
+
+| Method | Endpoint | Description                     | Auth |
+| ------ | -------- | ------------------------------- | ---- |
+| `GET`  | `/`      | Get learning analytics for user | ✅   |
+
+### Sidebar — `/api/sidebar`
+
+| Method | Endpoint | Description                 | Auth |
+| ------ | -------- | --------------------------- | ---- |
+| `GET`  | `/`      | Get sidebar navigation data | ✅   |
+
+---
+
+## 🔒 Authentication Flow
+
+1. User registers or logs in → server returns a **JWT** (30-day expiry).
+2. Frontend stores the JWT and sends it in every protected request as:
+   ```
+   Authorization: Bearer <token>
+   ```
+3. The `authMiddleware.js` `protect` function verifies the token and attaches the full `req.user` object to protected routes.
+
+---
+
+## 🚨 API Error Response Schema
+
+The backend now uses a single public error envelope for API failures. All application and validation errors are returned in this shape:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Request validation failed",
+    "details": []
+  }
+}
+```
+
+### Fields
+
+- `success`: Always `false` for failed responses.
+- `error.code`: Stable machine-readable code such as `VALIDATION_ERROR`, `UNAUTHORIZED`, `NOT_FOUND`, or `INTERNAL_SERVER_ERROR`.
+- `error.message`: Public-safe error summary intended for clients and UI display.
+- `error.details`: Always an array. Validation details, field metadata, or other structured notes are placed here when available; otherwise it is `[]`.
+
+### Implemented error classes and status mappings
+
+The shared error utility in `backend/utils/error.js` defines the project-wide custom errors:
+
+| Error class         |      HTTP status | Stable code             | Typical use                                 |
+| ------------------- | ---------------: | ----------------------- | ------------------------------------------- |
+| `AppError`          | `500` by default | `INTERNAL_SERVER_ERROR` | Generic unexpected failures                 |
+| `UnauthorizedError` |            `401` | `UNAUTHORIZED`          | Missing/invalid auth or expired credentials |
+| `BadRequestError`   |            `400` | `BAD_REQUEST`           | Invalid request data or bad inputs          |
+| `ForbiddenError`    |            `403` | `FORBIDDEN`             | Permission denied                           |
+| `ConflictError`     |            `409` | `CONFLICT`              | Duplicate or state-conflict conditions      |
+| `NotFoundError`     |            `404` | `NOT_FOUND`             | Missing resource                            |
+| `ValidationError`   |            `400` | `VALIDATION_ERROR`      | Validation failures with structured details |
+
+Additional parser and payload-level errors are handled by the global middleware:
+
+| Condition            | HTTP status | Code                    |
+| -------------------- | ----------: | ----------------------- |
+| Malformed JSON       |       `400` | `INVALID_JSON`          |
+| Oversized payload    |       `413` | `PAYLOAD_TOO_LARGE`     |
+| Unmatched route      |       `404` | `ROUTE_NOT_FOUND`       |
+| Unexpected exception |       `500` | `INTERNAL_SERVER_ERROR` |
+
+### Controller usage
+
+Controllers should raise custom application errors instead of returning ad hoc JSON objects. The project convention is:
+
+```js
+import { BadRequestError, forwardError } from "../utils/error.js";
+
+export const updateUserProfile = async (req, res, next) => {
+  try {
+    const { name } = req.body;
+
+    if (!name) {
+      return forwardError(next, res, new BadRequestError("Name is required"));
+    }
+
+    // ... business logic ...
+    return res.status(200).json({ success: true, data: updatedUser });
+  } catch (error) {
+    return next(error);
+  }
+};
+```
+
+This pattern keeps the controller logic simple while the shared error utilities produce the standardized error payload.
+
+### Global error handling behavior
+
+The global middleware in `backend/middleware/errorMiddleware.js` handles all thrown and forwarded application errors:
+
+- `entity.too.large` → `413` with `PAYLOAD_TOO_LARGE`
+- `entity.parse.failed` → `400` with `INVALID_JSON`
+- `AppError` and subclasses → use their status code and error code
+- Unknown exceptions → respond with `500` and the generic public message `Internal Server Error`
+
+The `toErrorPayload()` helper ensures the response is shaped as:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "...",
+    "message": "...",
+    "details": []
+  }
+}
+```
+
+Server-side diagnostics are still written to the console with the original error metadata, stack trace, and internal message for debugging, but the HTTP response remains public-safe and never exposes stack traces, database internals, tokens, or secrets.
+
+### Validation details and public safety
+
+Validation and business-rule failures can include structured details arrays, for example when a request is rejected for multiple invalid fields. The response still stays public-safe because the API only exposes the validated message, stable code, and details that are already considered safe to return.
+
+Unexpected exceptions are not leaked to clients. Instead, the generic public message is returned and the detailed error is logged on the server.
+
+### Not found and unmatched routes
+
+Two different 404 cases are intentionally distinguished:
+
+- `NotFoundError` in a controller: resource missing (`NOT_FOUND`)
+- Unmatched route middleware: route not defined (`ROUTE_NOT_FOUND`)
+
+This ensures API clients can tell whether a resource is absent versus a route is simply not implemented.
+
+### Third-party or external integrations
+
+The main backend does not expose provider-specific webhook payloads or third-party stack traces in client responses. External AI-service failures are handled internally with sanitized public messages, while the detailed provider failure is preserved only in server logs.
+
+---
+
+## 🤖 AI Video Caching
+
+The AI route (`/api/ai/generate-video`) implements a **cache-first** strategy:
+
+1. Check the `AIVideo` table for an existing record matching `(courseId, lessonId, celebrity)`.
+2. If found, verify the video still exists in the AI service.
+3. If the cache is valid → return immediately (no generation cost).
+4. If cache is stale/missing → call the Python AI service, then save the result to the DB.
+5. When the job completes and a Cloudinary URL is available, it is persisted to the `AIVideo` record for CDN serving.
