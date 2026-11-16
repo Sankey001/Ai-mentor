@@ -368,6 +368,12 @@ def blend_face(avatar: dict, index: int, face):
 
 
 def main() -> None:
+    # MuseTalk prints CJK brackets while preparing a face; on Windows the console
+    # encoding (e.g. cp1252) cannot encode them and the print fails the avatar.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=8102)
     parser.add_argument("--musetalk-dir", required=True)
