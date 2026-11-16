@@ -1,0 +1,8 @@
+# Voice-cloning worker (Chatterbox Turbo). Python 3.10, NVIDIA GPU with CUDA 12.4 drivers.
+# Install into local/voice_clone/.venv (see README.md).
+--extra-index-url https://download.pytorch.org/whl/cu124
+
+torch==2.6.0+cu124
+torchaudio==2.6.0+cu124
+chatterbox-tts==0.1.7
+truststore  # downloads work behind antivirus HTTPS scanning or a proxy

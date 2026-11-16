@@ -30,3 +30,5 @@ Thumbs.db
 
 # Python test caches
 **/.pytest_cache
+
+local/

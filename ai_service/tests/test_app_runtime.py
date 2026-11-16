@@ -1,6 +1,7 @@
 """Tests for the worker helpers and the app launcher (no GPU models needed)."""
 
 import json
+import os
 import sys
 import threading
 import time
@@ -247,3 +248,23 @@ def test_a_calm_or_lively_delivery_uses_the_standard_voice_model():
     assert voice_worker.wanted_model(0.8, turbo_allowed=True) == "standard"
     assert voice_worker.wanted_model(0.5, turbo_allowed=False) == "standard"
     assert "torch" not in voice_worker.__dict__
+
+
+def test_workers_in_the_local_folder_are_found_without_env_settings(tmp_path):
+    scripts, exe = ("Scripts", "python.exe") if os.name == "nt" else ("bin", "python")
+    face = tmp_path / "lip_sync" / ".venv" / scripts / exe
+    voice = tmp_path / "voice_clone" / ".venv" / scripts / exe
+    for path in (face, voice):
+        path.parent.mkdir(parents=True)
+        path.write_text("")
+    (tmp_path / "lip_sync" / "MuseTalk").mkdir()
+
+    filled = start_app.local_defaults({"VOICE_WORKER_PYTHON": ""}, str(tmp_path))
+    assert filled["FACE_WORKER_PYTHON"] == str(face)
+    assert filled["MUSETALK_DIR"] == str(tmp_path / "lip_sync" / "MuseTalk")
+    assert filled["VOICE_WORKER_PYTHON"] == str(voice)
+
+    # A path set in .env wins, and nothing is guessed when local/ is empty.
+    kept = start_app.local_defaults({"FACE_WORKER_PYTHON": "C:/mine/python.exe"}, str(tmp_path))
+    assert kept["FACE_WORKER_PYTHON"] == "C:/mine/python.exe"
+    assert start_app.local_defaults({}, str(tmp_path / "missing")) == {}

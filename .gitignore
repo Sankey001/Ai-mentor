@@ -80,3 +80,6 @@ ai_service/.venv/
 
 # Update plan
 update.md
+
+# Local AI runtimes and model caches (lip sync, voice cloning); see REQUIREMENTS.md
+/local/

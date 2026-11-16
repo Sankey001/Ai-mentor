@@ -170,6 +170,25 @@ def wait_until_healthy(process: Process, timeout: float) -> None:
     print(f"[app] {process.name} worker not ready yet; continuing", flush=True)
 
 
+LOCAL_DIR = os.path.join(os.path.dirname(SERVICE_DIR), "local")
+
+
+def local_defaults(env: dict[str, str], local_dir: str = LOCAL_DIR) -> dict[str, str]:
+    """Fill worker settings left empty in .env from the single-folder layout:
+    local/lip_sync/.venv + local/lip_sync/MuseTalk and local/voice_clone/.venv."""
+    scripts, exe = ("Scripts", "python.exe") if os.name == "nt" else ("bin", "python")
+    guesses = {
+        "FACE_WORKER_PYTHON": os.path.join(local_dir, "lip_sync", ".venv", scripts, exe),
+        "MUSETALK_DIR": os.path.join(local_dir, "lip_sync", "MuseTalk"),
+        "VOICE_WORKER_PYTHON": os.path.join(local_dir, "voice_clone", ".venv", scripts, exe),
+    }
+    filled = dict(env)
+    for key, path in guesses.items():
+        if not filled.get(key) and os.path.exists(path):
+            filled[key] = path
+    return filled
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=8000)
@@ -180,7 +199,11 @@ def main() -> None:
     # Stop cleanly, taking the workers down too, when asked to terminate.
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
 
-    env = read_env(os.path.join(SERVICE_DIR, "backend", ".env"))
+    env = local_defaults(read_env(os.path.join(SERVICE_DIR, "backend", ".env")))
+    # The voice worker's models live in local/models/huggingface unless HF_HOME says otherwise.
+    local_models = os.path.join(LOCAL_DIR, "models", "huggingface")
+    if os.path.isdir(local_models):
+        os.environ.setdefault("HF_HOME", local_models)
     plan, warnings = plan_processes(env, SERVICE_DIR, args.port, args.host)
     for warning in warnings:
         print(f"[app] note: {warning}", flush=True)
