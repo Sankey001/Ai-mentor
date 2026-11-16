@@ -115,7 +115,11 @@ def main() -> None:
 
     import torch
 
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    device = args.device or (
+        "cuda" if torch.cuda.is_available()
+        else "mps" if torch.backends.mps.is_available()  # Apple silicon GPU
+        else "cpu"
+    )
     worker = VoiceWorker(args.allowed_root, device, prefer_turbo=not args.standard)
     print(f"[voice] {worker.kind} model loaded on {device}", flush=True)
     serve(args.port, {"/speak": worker.speak}, "voice")

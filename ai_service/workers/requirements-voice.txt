@@ -6,3 +6,4 @@ torch==2.6.0+cu124
 torchaudio==2.6.0+cu124
 chatterbox-tts==0.1.7
 truststore  # downloads work behind antivirus HTTPS scanning or a proxy
+setuptools<70  # provides pkg_resources; without it the voice watermarker (resemble-perth) silently fails

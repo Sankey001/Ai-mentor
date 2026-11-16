@@ -6,7 +6,7 @@ What AI Mentor needs to run on your own computer, and how much it downloads. Siz
 
 |               | Minimum (chat only)                               | Recommended (lip sync + own voice)                  |
 | ------------- | ------------------------------------------------- | --------------------------------------------------- |
-| System        | Windows 10/11, 64-bit                             | Windows 11, 64-bit                                  |
+| System        | Windows 10/11, Linux or macOS, 64-bit             | Windows 11 or Linux, 64-bit                         |
 | Memory (RAM)  | 8 GB                                              | 16 GB; close games and other heavy apps first       |
 | Graphics card | Not required (local models run slowly on the CPU) | NVIDIA, 8 GB video memory (tested: RTX 4060 Laptop) |
 | NVIDIA driver | —                                                 | 550 or newer (CUDA 12.4)                            |
@@ -14,6 +14,17 @@ What AI Mentor needs to run on your own computer, and how much it downloads. Siz
 | Internet      | For installing only                               | For installing only                                 |
 
 With 8 GB of video memory, `gemma3` (3.3 GB) runs fully on the GPU beside lip sync and voice, and replies in seconds. `qwen3.5:9b` (6.6 GB) only partly fits: replies take about a minute, and several minutes with "Think first".
+
+## What runs where
+
+| Part                                  | Windows                        | Linux                                                                         | macOS                                                            |
+| ------------------------------------- | ------------------------------ | ----------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| App, website, local AI model (Ollama) | Yes                            | Yes                                                                           | Yes (Apple silicon uses its GPU)                                 |
+| Lip sync (MuseTalk)                   | NVIDIA GPU                     | NVIDIA GPU                                                                    | No (needs CUDA)                                                  |
+| Voice cloning (Chatterbox)            | NVIDIA GPU, or slow on the CPU | NVIDIA GPU, or slow on the CPU                                                | Apple silicon only (Intel Macs are not supported by PyTorch 2.6) |
+| Setup installs tools with             | winget                         | apt, dnf, pacman or zypper (asks for your password); Node.js per user via nvm | Homebrew                                                         |
+
+Tested: Windows 11 and Ubuntu 24.04 (WSL2) with an RTX 4060. macOS is supported by the setup script but not yet tested.
 
 ## Downloads
 

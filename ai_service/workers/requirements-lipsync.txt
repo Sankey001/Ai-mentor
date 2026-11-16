@@ -28,3 +28,4 @@ scipy
 requests
 tqdm
 truststore  # downloads work behind antivirus HTTPS scanning or a proxy
+setuptools<70  # provides pkg_resources; without it the voice watermarker (resemble-perth) silently fails

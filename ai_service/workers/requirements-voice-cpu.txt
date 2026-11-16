@@ -1,0 +1,11 @@
+# Voice-cloning worker (Chatterbox Turbo) without an NVIDIA GPU: macOS (runs on
+# Apple's GPU when available) and Linux/Windows on the CPU (slow). Python 3.10.
+# The CPU index keeps Linux from downloading the CUDA build; macOS gets its
+# usual wheels from it too.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch==2.6.0
+torchaudio==2.6.0
+chatterbox-tts==0.1.7
+truststore  # downloads work behind antivirus HTTPS scanning or a proxy
+setuptools<70  # provides pkg_resources; without it the voice watermarker (resemble-perth) silently fails

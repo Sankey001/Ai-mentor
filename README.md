@@ -4,56 +4,43 @@ A live AI mentor that teaches lessons and answers questions with a face, lip syn
 
 Specs, download sizes and what each part needs: [REQUIREMENTS.md](REQUIREMENTS.md)
 
+## Install
+
+One command downloads the project into `./Ai-mentor` and installs everything it needs. It asks before the large optional parts and can be run again safely.
+
+**Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/Sankey001/Ai-mentor/main/setup.ps1 | iex
+```
+
+**Linux / macOS** (Terminal):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Sankey001/Ai-mentor/main/setup.sh | bash
+```
+
 ## Run
 
 ```powershell
-cd ai_service
-.venv\Scripts\python start_app.py
+cd Ai-mentor
+.\run.cmd      # Windows
+./run.sh       # Linux / macOS
 ```
 
 Open http://localhost:5173/mentor. API keys, models and model folders: http://localhost:5173/mentor-settings. Stop with `Ctrl+C`.
 
-## Install (once, Windows PowerShell)
+## Setup options
 
-### 1. App and a local AI model (about 5 GB)
+From inside the project: `.\setup.cmd -All` on Windows, `./setup.sh --all` on Linux and macOS.
 
-```powershell
-winget install --source winget astral-sh.uv
-winget install --source winget Gyan.FFmpeg
-winget install --source winget Ollama.Ollama
-winget install --source winget OpenJS.NodeJS.LTS
-```
-
-Open a new terminal, then:
-
-```powershell
-$env:UV_NATIVE_TLS = "true"
-git clone https://github.com/Sankey001/Ai-mentor.git
-cd Ai-mentor
-uv venv ai_service\.venv --python 3.13
-uv pip install --python ai_service\.venv\Scripts\python.exe -r ai_service\backend\requirements.txt
-npm ci --prefix frontend
-copy frontend\mentor-preview.env.example frontend\.env
-copy ai_service\backend\.env.example ai_service\backend\.env
-ollama pull gemma3
-```
-
-### 2. Lip sync (optional, about 10 GB, NVIDIA GPU)
-
-```powershell
-git clone --depth 1 https://github.com/TMElyralab/MuseTalk.git local\lip_sync\MuseTalk
-uv venv local\lip_sync\.venv --python 3.10
-uv pip install --python local\lip_sync\.venv\Scripts\python.exe --index-strategy unsafe-best-match -r ai_service\workers\requirements-lipsync.txt
-uv pip install --python local\lip_sync\.venv\Scripts\python.exe --no-deps mmpose==1.1.0 json-tricks munkres xtcocotools
-local\lip_sync\.venv\Scripts\python ai_service\workers\download_models.py lipsync
-```
-
-### 3. Your own voice (optional, about 12 GB, NVIDIA GPU)
-
-```powershell
-uv venv local\voice_clone\.venv --python 3.10
-uv pip install --python local\voice_clone\.venv\Scripts\python.exe --index-strategy unsafe-best-match -r ai_service\workers\requirements-voice.txt
-local\voice_clone\.venv\Scripts\python ai_service\workers\download_models.py voice
-```
-
-Everything in `local\` is found automatically and is never uploaded to git.
+| Windows       | Linux / macOS   | What it does                                                       |
+| ------------- | --------------- | ------------------------------------------------------------------ |
+| `-All`        | `--all`         | Also install lip sync and voice cloning, without asking            |
+| `-LipSync`    | `--lipsync`     | Also install lip sync (NVIDIA GPU)                                 |
+| `-Voice`      | `--voice`       | Also install voice cloning                                         |
+| `-Model X`    | `--model X`     | Local AI model to download and use (default `gemma3`)              |
+| `-ApiOnly`    | `--api-only`    | No local model; replies use your Gemini or Groq key                |
+| `-Yes`        | `--yes`         | Ask nothing; install only what the options name                    |
+| `-Dir PATH`   | `--dir PATH`    | Where to put the project (default `./Ai-mentor`)                   |
+| `-SkipSystem` | `--skip-system` | Only check tools like Git, FFmpeg and Node.js; do not install them |
