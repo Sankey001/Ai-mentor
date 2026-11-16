@@ -13,6 +13,10 @@ from backend.services.providers.groq_provider import (
     groq_client,
     generate_groq_content,
 )
+from backend.services.providers.ollama_provider import (
+    OllamaProvider,
+    generate_ollama_content,
+)
 from backend.services.providers.manager import (
     explain_code,
     generate_flashcards,
@@ -21,6 +25,8 @@ from backend.services.providers.manager import (
     generate_syllabus,
     gemini_provider,
     groq_provider,
+    ollama_provider,
+    primary_provider,
 )
 
 __all__ = [
@@ -33,8 +39,12 @@ __all__ = [
     "GroqProvider",
     "groq_client",
     "generate_groq_content",
+    "OllamaProvider",
+    "generate_ollama_content",
     "gemini_provider",
     "groq_provider",
+    "ollama_provider",
+    "primary_provider",
     "generate_lesson_script",
     "generate_syllabus",
     "generate_quiz",

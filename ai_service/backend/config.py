@@ -4,12 +4,23 @@ from dotenv import load_dotenv
 if not os.getenv("PYTEST_CURRENT_TEST"):
     load_dotenv(override=False)
 
-# Required: Primary AI provider
+# Primary AI provider: "gemini" (default, needs GEMINI_API_KEY) or "ollama"
+# (a model running locally through Ollama, no key needed).
+AI_PROVIDER = (os.getenv("AI_PROVIDER", "gemini") or "gemini").strip().lower()
+if AI_PROVIDER not in {"gemini", "ollama"}:
+    raise ValueError(f"AI_PROVIDER must be 'gemini' or 'ollama', not {AI_PROVIDER!r}.")
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
+# Local models through Ollama (https://ollama.com), used when AI_PROVIDER=ollama.
+OLLAMA_URL = (os.getenv("OLLAMA_URL", "http://127.0.0.1:11434") or "").rstrip("/")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b") or "qwen2.5:7b"
+
 # LLM call timeout in seconds
 LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "60") or "60")
+# A local model is slower, and its first call also loads it into memory.
+OLLAMA_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180") or "180")
 
 # Optional: Fallback AI provider
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -42,7 +53,7 @@ CLOUDINARY_ENABLED = all([
 
 
 def validate_config():
-    if not GEMINI_API_KEY:
+    if AI_PROVIDER == "gemini" and not GEMINI_API_KEY:
         raise ValueError("GEMINI_API_KEY is required for the AI service.")
 
 

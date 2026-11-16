@@ -8,6 +8,7 @@ from backend.api.v1.endpoints.code import router as code_router
 from backend.api.v1.endpoints.lessons import router as lessons_router
 from backend.api.v1.endpoints.jobs import router as jobs_router
 from backend.api.v1.endpoints.talk import router as talk_router
+from backend.api.v1.endpoints.settings import router as settings_router
 
 api_v1_router = APIRouter()
 
@@ -20,3 +21,4 @@ api_v1_router.include_router(code_router)
 api_v1_router.include_router(lessons_router)
 api_v1_router.include_router(jobs_router)
 api_v1_router.include_router(talk_router)
+api_v1_router.include_router(settings_router)

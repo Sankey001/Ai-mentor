@@ -65,11 +65,33 @@ def generate_gemini_content(
 
 
 class GeminiProvider(BaseAIProvider):
-    """Primary AI provider implementation utilizing Google Gemini."""
+    """Primary AI provider implementation utilizing Google Gemini.
+
+    The prompts and response checks below are shared with OllamaProvider, which
+    overrides only ``model_name``, ``_generate`` and ``_generate_prompt``.
+    """
 
     @property
     def provider_name(self) -> str:
         return "gemini"
+
+    @property
+    def model_name(self) -> str:
+        return GEMINI_MODEL
+
+    def _generate(
+        self, system_instruction: str, user_data: dict[str, Any], *, expect: str = "text"
+    ) -> str:
+        """Return the model's reply. ``expect`` is "text", "object" or "array"."""
+        return generate_gemini_content(system_instruction, user_data).text
+
+    def _generate_prompt(self, prompt: str, *, expect: str = "text") -> str:
+        """Return the model's reply to a single prompt with no system instruction."""
+        client = get_gemini_client()
+        return client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=prompt,
+        ).text
 
     def generate_lesson_script(self, data: LessonRequest) -> tuple[str, str, str]:
         system_instruction = f"""
@@ -96,10 +118,10 @@ class GeminiProvider(BaseAIProvider):
             ),
         }
 
-        log_event("RUN", "Trying Gemini for lesson script")
-        response = generate_gemini_content(system_instruction, user_data)
-        log_event("OK", "Gemini lesson script generated")
-        return response.text.strip().replace("\n", " "), "gemini", GEMINI_MODEL
+        log_event("RUN", "Trying Gemini for lesson script", provider=self.provider_name)
+        text = self._generate(system_instruction, user_data)
+        log_event("OK", "Gemini lesson script generated", provider=self.provider_name)
+        return text.strip().replace("\n", " "), self.provider_name, self.model_name
 
     def generate_syllabus(self, data: SyllabusRequest) -> dict[str, Any]:
         system_instruction = f"""
@@ -109,12 +131,16 @@ class GeminiProvider(BaseAIProvider):
         provided in the JSON data. Respond with ONLY a valid JSON object, without
         markdown or code fences, using this structure:
         {{
-          "title": "Module 1: Introduction",
-          "lessons": [
+          "modules": [
             {{
-              "title": "Lesson 1: Basics",
-              "duration": "5 mins",
-              "type": "video"
+              "title": "Module 1: Introduction",
+              "lessons": [
+                {{
+                  "title": "Lesson 1: Basics",
+                  "duration": "5 mins",
+                  "type": "video"
+                }}
+              ]
             }}
           ]
         }}
@@ -127,9 +153,8 @@ class GeminiProvider(BaseAIProvider):
             "category": data.category or "General Education",
         }
 
-        log_event("RUN", "Generating syllabus with Gemini")
-        response = generate_gemini_content(system_instruction, user_data)
-        text = response.text.strip()
+        log_event("RUN", "Generating syllabus with Gemini", provider=self.provider_name)
+        text = self._generate(system_instruction, user_data, expect="object").strip()
 
         if text.startswith("```json"):
             text = text[7:]
@@ -173,9 +198,8 @@ class GeminiProvider(BaseAIProvider):
         """
         user_data = {"lesson": data.lesson}
 
-        log_event("RUN", "Trying Gemini")
-        response = generate_gemini_content(system_instruction, user_data)
-        text = response.text.strip()
+        log_event("RUN", "Trying Gemini", provider=self.provider_name)
+        text = self._generate(system_instruction, user_data, expect="object").strip()
 
         if text.startswith("```json"):
             text = text[7:]
@@ -216,8 +240,7 @@ class GeminiProvider(BaseAIProvider):
             "transcript": data.transcript,
         }
 
-        response = generate_gemini_content(system_instruction, user_data)
-        text = response.text.strip()
+        text = self._generate(system_instruction, user_data, expect="array").strip()
 
         if text.startswith("```"):
             text = text.split("\n", 1)[-1]
@@ -296,13 +319,8 @@ class GeminiProvider(BaseAIProvider):
         Do not invent bugs or complexity estimates when they cannot be determined.
         """
 
-        print("Trying Gemini for code analysis...")
-        client = get_gemini_client()
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=prompt,
-        )
-        result_text = response.text.strip()
+        print(f"Trying {self.provider_name} for code analysis...")
+        result_text = self._generate_prompt(prompt, expect="object").strip()
 
         if result_text.startswith("```json"):
             result_text = result_text[7:]

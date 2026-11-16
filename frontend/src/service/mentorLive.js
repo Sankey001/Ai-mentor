@@ -34,6 +34,8 @@ const getJson = async (path, signal) => {
 
 export const listMentors = async (signal) => (await getJson("/mentors", signal)).mentors;
 export const workerStatus = (signal) => getJson("/talk/status", signal);
+// { default: {source, provider, model}, options: [{source, provider, model, label, available}] }
+export const listModels = (signal) => getJson("/talk/models", signal);
 
 // Split a Server-Sent Events buffer into parsed events and the unfinished tail.
 export const parseSseEvents = (buffer) => {
@@ -57,13 +59,25 @@ export const streamTalk = async ({
   message = "",
   lesson,
   history = [],
+  provider,
+  model,
+  think = false,
   signal,
   onEvent,
 }) => {
   const response = await fetch(`${AI_SERVICE_URL}/talk`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mentor, message, ...(lesson && { lesson }), history }),
+    body: JSON.stringify({
+      mentor,
+      message,
+      ...(lesson && { lesson }),
+      history,
+      // The learner's pick from listModels; omitted, the service uses its default.
+      ...(provider && { provider, model }),
+      // Only for a model whose listModels entry says `thinking: true`.
+      ...(think && { think: true }),
+    }),
     signal,
   });
   if (!response.ok) throw await explain(response);
@@ -81,6 +95,18 @@ export const streamTalk = async ({
 };
 
 export const listVoices = async (signal) => (await getJson("/voices", signal)).voices;
+
+// Settings page: API keys come back only as { set, hint }, never their value.
+export const getSettings = (signal) => getJson("/settings", signal);
+export const saveSettings = async (changes) => {
+  const response = await fetch(`${AI_SERVICE_URL}/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ changes }),
+  });
+  if (!response.ok) throw await explain(response);
+  return response.json();
+};
 export const getMentor = (name, signal) => getJson(`/mentors/${encodeURIComponent(name)}`, signal);
 export const mentorImageUrl = (name, filename) =>
   `${AI_SERVICE_URL}/mentors/${encodeURIComponent(name)}/images/${encodeURIComponent(filename)}`;

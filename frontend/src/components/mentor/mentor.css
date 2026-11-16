@@ -152,6 +152,33 @@
 .mt-chip:disabled {
   opacity: 0.45;
 }
+.mt-settings {
+  display: grid;
+  gap: 20px;
+  max-width: 760px;
+}
+.mt-settings-title {
+  margin: 0 0 16px;
+  font-size: 16px;
+  font-weight: 700;
+}
+.mt-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+.mt-chip--toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.mt-chip--toggle[aria-pressed="true"] {
+  border-color: var(--color-text-main);
+  background: var(--color-canvas-alt);
+  font-weight: 600;
+}
 .mt-compose {
   display: flex;
   gap: 8px;

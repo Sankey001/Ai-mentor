@@ -6,7 +6,14 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Respo
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
-from backend.services import media_processor, media_workers, mentor_pack, mentor_studio, talk
+from backend.services import (
+    media_processor,
+    media_workers,
+    mentor_pack,
+    mentor_studio,
+    model_choices,
+    talk,
+)
 
 router = APIRouter()
 
@@ -29,6 +36,11 @@ class TalkRequest(BaseModel):
     message: str = Field("", max_length=500)
     lesson: TalkLesson | None = None
     history: list[TalkTurn] = Field(default_factory=list, max_length=40)
+    # The learner's pick from GET /talk/models; omitted means the configured default.
+    provider: Literal["ollama", "gemini", "groq"] | None = None
+    model: str | None = Field(None, min_length=1, max_length=100)
+    # Let a thinking model reason before it answers (slower, often better).
+    think: bool = False
 
     @model_validator(mode="after")
     def needs_message_or_lesson(self):
@@ -50,14 +62,31 @@ async def talk_to_mentor(body: TalkRequest):
     mentor = _known_mentor(body.mentor)
     history = [turn.model_dump() for turn in body.history]
     lesson = body.lesson.model_dump() if body.lesson else None
+    choice = None
+    if body.provider:
+        try:
+            choice = model_choices.validate_choice(body.provider, body.model)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+    if body.think and not model_choices.can_think(choice):
+        raise HTTPException(
+            status_code=422,
+            detail="Thinking needs a local model that supports it, such as qwen3.5.",
+        )
 
     async def events():
-        async for event in talk.talk(mentor, body.message, history, lesson):
+        async for event in talk.talk(mentor, body.message, history, lesson, choice, body.think):
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(
         events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"}
     )
+
+
+@router.get("/talk/models")
+def talk_models():
+    """Local Ollama models and online APIs the mentor chat can use."""
+    return model_choices.list_choices()
 
 
 @router.get("/talk/status")

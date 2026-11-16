@@ -15,6 +15,7 @@ vi.mock("react-i18next", () => ({
 
 const service = vi.hoisted(() => ({
   listMentors: vi.fn(),
+  listModels: vi.fn(),
   workerStatus: vi.fn(),
   loadCourseContent: vi.fn(),
   streamTalk: vi.fn(),
@@ -23,6 +24,8 @@ const service = vi.hoisted(() => ({
   updateMentor: vi.fn(),
   getMentor: vi.fn(),
   listVoices: vi.fn(),
+  getSettings: vi.fn(),
+  saveSettings: vi.fn(),
 }));
 vi.mock("../service/mentorLive", async (importActual) => ({
   ...(await importActual()),
@@ -31,6 +34,7 @@ vi.mock("../service/mentorLive", async (importActual) => ({
 
 import MentorClassroom from "../pages/MentorClassroom";
 import MentorStudio from "../pages/MentorStudio";
+import MentorSettings from "../pages/MentorSettings";
 
 const course = {
   title: "React Fundamentals",
@@ -53,6 +57,41 @@ const mentors = [
   { name: "owl", voice: "stock", persona: false, state: "ready", uploaded: false },
 ];
 
+const models = {
+  default: { source: "api", provider: "gemini", model: "gemini-2.5-flash" },
+  options: [
+    {
+      source: "local",
+      provider: "ollama",
+      model: "gemma3:latest",
+      label: "gemma3:latest (3.3 GB)",
+      available: true,
+    },
+    {
+      source: "local",
+      provider: "ollama",
+      model: "qwen3.5:9b",
+      label: "qwen3.5:9b (6.6 GB)",
+      available: true,
+      thinking: true,
+    },
+    {
+      source: "api",
+      provider: "gemini",
+      model: "gemini-2.5-flash",
+      label: "Gemini (gemini-2.5-flash)",
+      available: true,
+    },
+    {
+      source: "api",
+      provider: "groq",
+      model: "llama-3.3-70b-versatile",
+      label: "Groq (Llama 3.3 70B)",
+      available: false,
+    },
+  ],
+};
+
 const renderAt = (path) =>
   render(
     <MemoryRouter initialEntries={[path]}>
@@ -60,6 +99,7 @@ const renderAt = (path) =>
         <Route path="/mentor" element={<MentorClassroom />} />
         <Route path="/mentor/:courseId" element={<MentorClassroom />} />
         <Route path="/mentor-studio" element={<MentorStudio />} />
+        <Route path="/mentor-settings" element={<MentorSettings />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -71,6 +111,7 @@ beforeEach(() => {
   window.URL.createObjectURL = vi.fn(() => "blob:preview");
   window.URL.revokeObjectURL = vi.fn();
   service.listMentors.mockResolvedValue(mentors);
+  service.listModels.mockResolvedValue(models);
   service.workerStatus.mockResolvedValue({ voice: true, face: false });
   service.loadCourseContent.mockResolvedValue(course);
   service.streamTalk.mockImplementation(async ({ onEvent }) => {
@@ -144,7 +185,7 @@ describe("MentorClassroom", () => {
 
     expect((await screen.findAllByText("React builds screens from small parts.")).length).toBe(2);
     expect(screen.getByText("Teach me: What is React?")).toBeTruthy();
-    expect(screen.getByText("Voice: cloned · Face: lipsync")).toBeTruthy();
+    expect(screen.getByText("AI: gemini · Voice: cloned · Face: lipsync")).toBeTruthy();
     const call = service.streamTalk.mock.calls[0][0];
     expect(call.mentor).toBe("asha");
     expect(call.message).toBe("");
@@ -167,7 +208,7 @@ describe("MentorClassroom", () => {
     const input = screen.getByLabelText("Your question");
     fireEvent.change(input, { target: { value: "Who made it?" } });
     fireEvent.submit(input.closest("form"));
-    await screen.findByText("Voice: cloned · Face: lipsync");
+    await screen.findByText("AI: gemini · Voice: cloned · Face: lipsync");
     fireEvent.change(input, { target: { value: "And when?" } });
     fireEvent.submit(input.closest("form"));
 
@@ -179,6 +220,92 @@ describe("MentorClassroom", () => {
       { role: "learner", text: "Who made it?" },
       { role: "mentor", text: "React builds screens from small parts." },
     ]);
+  });
+
+  it("lets the learner run replies on this computer or an online API, and remembers it", async () => {
+    renderAt("/mentor/1");
+    await screen.findByRole("heading", { name: "What is React?" });
+    const source = screen.getByLabelText("Run on");
+    const model = screen.getByLabelText("AI model");
+    // Without a pick, the service's default (an online API here) is shown.
+    await waitFor(() => expect(source.value).toBe("api"));
+    expect(model.value).toBe("gemini|gemini-2.5-flash");
+    const groq = [...model.options].find((option) => option.value.startsWith("groq"));
+    expect(groq.disabled).toBe(true);
+    expect(groq.textContent).toMatch(/no API key/);
+
+    fireEvent.change(source, { target: { value: "local" } });
+    expect(model.value).toBe("ollama|gemma3:latest");
+    fireEvent.change(model, { target: { value: "ollama|qwen3.5:9b" } });
+    expect(JSON.parse(localStorage.getItem("ai-mentor-live-model"))).toEqual({
+      provider: "ollama",
+      model: "qwen3.5:9b",
+    });
+
+    service.streamTalk.mockImplementationOnce(async ({ onEvent }) => {
+      onEvent({ type: "reply", text: "Local answer.", provider: "ollama" });
+      onEvent({ type: "done" });
+    });
+    const input = screen.getByLabelText("Your question");
+    fireEvent.change(input, { target: { value: "Hi" } });
+    fireEvent.submit(input.closest("form"));
+
+    await screen.findByText(/AI: qwen3.5:9b/);
+    const call = service.streamTalk.mock.calls[0][0];
+    expect([call.provider, call.model]).toEqual(["ollama", "qwen3.5:9b"]);
+  });
+
+  it("offers Think first only for a thinking model and sends it with the question", async () => {
+    renderAt("/mentor/1");
+    await screen.findByRole("heading", { name: "What is React?" });
+    await waitFor(() => expect(screen.getByLabelText("Run on").value).toBe("api"));
+    const toggle = screen.getByRole("button", { name: /Think first/ });
+    // Gemini (the default here) cannot think, nor can gemma3.
+    expect(toggle.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Run on"), { target: { value: "local" } });
+    expect(toggle.disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText("AI model"), { target: { value: "ollama|qwen3.5:9b" } });
+    expect(toggle.disabled).toBe(false);
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    expect(localStorage.getItem("ai-mentor-live-think")).toBe("true");
+
+    service.streamTalk.mockImplementationOnce(async ({ onEvent }) => {
+      onEvent({ type: "reply", text: "Thought it through.", provider: "ollama" });
+      onEvent({ type: "done" });
+    });
+    const input = screen.getByLabelText("Your question");
+    fireEvent.change(input, { target: { value: "Why?" } });
+    fireEvent.submit(input.closest("form"));
+
+    await screen.findByText(/AI: qwen3.5:9b \(thinking\)/);
+    expect(service.streamTalk.mock.calls[0][0].think).toBe(true);
+
+    // Switching to a model that cannot think stops sending it, but keeps the setting.
+    fireEvent.change(screen.getByLabelText("AI model"), {
+      target: { value: "ollama|gemma3:latest" },
+    });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.change(input, { target: { value: "And?" } });
+    fireEvent.submit(input.closest("form"));
+    await waitFor(() => expect(service.streamTalk).toHaveBeenCalledTimes(2));
+    expect(service.streamTalk.mock.calls[1][0].think).toBe(false);
+    expect(localStorage.getItem("ai-mentor-live-think")).toBe("true");
+  });
+
+  it("still talks with the service default when the model list cannot load", async () => {
+    service.listModels.mockRejectedValue(new TypeError("Failed to fetch"));
+    renderAt("/mentor/1");
+    await screen.findByRole("heading", { name: "What is React?" });
+    await waitFor(() => expect(screen.getByLabelText("Mentor").value).toBe("asha"));
+
+    expect(screen.getByLabelText("AI model").disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: /Teach this lesson/ }));
+
+    await screen.findByText("AI: gemini · Voice: cloned · Face: lipsync");
+    expect(service.streamTalk.mock.calls[0][0].provider).toBeUndefined();
   });
 
   it("explains what to do when the mentor service is down", async () => {
@@ -198,6 +325,70 @@ describe("MentorClassroom", () => {
     fireEvent.click(screen.getByRole("button", { name: "Quiz me on this" }));
 
     expect(await screen.findByText(/could not answer. Mentor not found/)).toBeTruthy();
+  });
+});
+
+describe("MentorSettings", () => {
+  const settings = {
+    env_file: "E:\\Ai-mentor\\ai_service\\backend\\.env",
+    values: {
+      AI_PROVIDER: { value: "ollama" },
+      OLLAMA_MODEL: { value: "gemma3:latest" },
+      OLLAMA_URL: { value: "http://127.0.0.1:11434" },
+      GEMINI_MODEL: { value: "gemini-2.5-flash" },
+      GEMINI_API_KEY: { set: true, hint: "abcd" },
+      GROQ_API_KEY: { set: false, hint: "" },
+      MUSETALK_DIR: { value: "E:/workers/MuseTalk", exists: true },
+      FACE_WORKER_PYTHON: { value: "E:/workers/face/python.exe", exists: true },
+      VOICE_WORKER_PYTHON: { value: "", exists: false },
+    },
+    ollama_models: {
+      value: "D:\\Ollama_Models",
+      source: "Set for this Windows user",
+      exists: true,
+      editable: true,
+      installed: ["gemma3:latest", "qwen3.5:9b"],
+    },
+    huggingface: { value: "E:\\ai-models\\huggingface", exists: true },
+  };
+
+  it("shows where models live, hides saved keys, and saves only what changed", async () => {
+    service.getSettings.mockResolvedValue(settings);
+    service.saveSettings.mockResolvedValue(settings);
+    renderAt("/mentor-settings");
+
+    const folder = await screen.findByLabelText(/Local AI models folder/);
+    expect(folder.value).toBe("D:\\Ollama_Models");
+    expect(screen.getByText(/serving 2 models: gemma3:latest, qwen3.5:9b/)).toBeTruthy();
+    expect(screen.getByText("Saved …abcd")).toBeTruthy();
+    expect(screen.getByLabelText(/Gemini API key/).value).toBe("");
+    const save = screen.getByRole("button", { name: /Save settings/ });
+    expect(save.disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText("Default local model"), {
+      target: { value: "qwen3.5:9b" },
+    });
+    fireEvent.change(screen.getByLabelText(/Groq API key/), { target: { value: "gsk_123" } });
+    fireEvent.click(save);
+
+    await screen.findByText(/Saved\. Restart the app/);
+    expect(service.saveSettings).toHaveBeenCalledWith({
+      OLLAMA_MODEL: "qwen3.5:9b",
+      GROQ_API_KEY: "gsk_123",
+    });
+  });
+
+  it("removes a saved key only when asked, and shows the server's reason on failure", async () => {
+    service.getSettings.mockResolvedValue(settings);
+    service.saveSettings.mockRejectedValue(new Error("OLLAMA_URL must look like http://..."));
+    renderAt("/mentor-settings");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+    expect(screen.getByText("Will be removed")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Save settings/ }));
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(/OLLAMA_URL must look like/);
+    expect(service.saveSettings).toHaveBeenCalledWith({ GEMINI_API_KEY: "" });
   });
 });
 

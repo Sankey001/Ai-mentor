@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 
-from backend.config import GEMINI_MODEL
+from backend.config import GEMINI_MODEL, OLLAMA_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ SAFE_LOG_FIELDS = {
     "code",
 }
 SAFE_LOG_VALUES = {
-    "provider": {"gemini", "groq"},
+    "provider": {"gemini", "groq", "ollama"},
     "stage": {"started", "completed", "failed"},
     "status": {"queued", "processing", "completed", "failed"},
     "configured": {"true", "false"},
@@ -97,6 +97,7 @@ def log_event(level: str, message: str, **details) -> None:
         elif key == "model":
             if isinstance(value, str) and value in {
                 GEMINI_MODEL,
+                OLLAMA_MODEL,
                 "llama-3.3-70b-versatile",
             }:
                 safe_details[key] = value

@@ -11,6 +11,7 @@ export default function MentorPreviewLayout() {
         <span className="mt-brand">AI Mentor</span>
         <NavLink to="/mentor">Classroom</NavLink>
         <NavLink to="/mentor-studio">Mentor studio</NavLink>
+        <NavLink to="/mentor-settings">Settings</NavLink>
       </header>
       <Outlet />
     </div>

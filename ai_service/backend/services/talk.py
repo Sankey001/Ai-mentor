@@ -22,7 +22,8 @@ import uuid
 from typing import AsyncIterator
 
 import backend.voices as voices
-from backend.config import LLM_TIMEOUT_SECONDS
+from backend import config
+from backend.config import AI_PROVIDER, LLM_TIMEOUT_SECONDS, OLLAMA_MODEL
 from backend.services import media_workers, mentor_pack
 from backend.services.media_processor import BASE_DIR, generate_tts, get_mentor_clips
 from backend.services.providers.base import (
@@ -31,6 +32,10 @@ from backend.services.providers.base import (
 )
 from backend.services.providers.gemini_provider import generate_gemini_content
 from backend.services.providers.groq_provider import generate_groq_content
+from backend.services.providers.ollama_provider import (
+    generate_ollama_content,
+    release_ollama_model,
+)
 from backend.utils.logging_utils import log_event, short_error
 
 TALK_DIR = os.path.join(BASE_DIR, "outputs", "talk")
@@ -40,6 +45,9 @@ MAX_REPLY_SENTENCES = 4
 MAX_LESSON_SENTENCES = 8
 SESSION_MAX_AGE_SECONDS = 3600
 FALLBACK_REPLY = "Sorry, I lost my train of thought. Could you ask me that again?"
+THINKING_TOKENS = 4000  # reasoning plus the short spoken reply
+# A local model that only partly fits on the GPU reasons at a few tokens a second.
+THINKING_TIMEOUT_SECONDS = 600
 
 
 def split_sentences(text: str, max_chars: int = 200) -> list[str]:
@@ -56,9 +64,21 @@ def split_sentences(text: str, max_chars: int = 200) -> list[str]:
 
 
 def write_reply(
-    mentor: str, message: str, history: list[dict], lesson: dict | None = None
+    mentor: str,
+    message: str,
+    history: list[dict],
+    lesson: dict | None = None,
+    choice: tuple[str, str] | None = None,
+    think: bool = False,
 ) -> tuple[str, str]:
-    """Return (reply, provider), trying Gemini, then Groq, then a fixed apology."""
+    """Return (reply, provider).
+
+    ``choice`` is the learner's (provider, model) pick. Without one, the
+    AI_PROVIDER model (Gemini or a local Ollama model) is tried, then Groq. A local
+    pick is never sent to an online API, so the conversation stays on this
+    computer. ``think`` lets a local thinking model reason first. When every
+    attempt fails, a fixed apology is returned.
+    """
     if lesson and not message:
         task = (
             "Teach the lesson named in the JSON to the learner in five to seven short "
@@ -82,17 +102,41 @@ def write_reply(
     if lesson:
         user_data["lesson"] = lesson
 
-    attempts = [
-        ("gemini", lambda: generate_gemini_content(system_instruction, user_data).text),
-        (
-            "groq",
-            lambda: generate_groq_content(
-                system_instruction, user_data, max_tokens=400, timeout=LLM_TIMEOUT_SECONDS
-            )
-            .choices[0]
-            .message.content,
-        ),
-    ]
+    def ollama(model: str, thinking: bool = False):
+        # The reasoning counts against the token budget, so thinking gets far more room.
+        return (
+            "ollama",
+            lambda: generate_ollama_content(
+                system_instruction,
+                user_data,
+                max_tokens=THINKING_TOKENS if thinking else 400,
+                model=model,
+                think=thinking,
+                timeout=THINKING_TIMEOUT_SECONDS if thinking else None,
+            ),
+        )
+
+    gemini = ("gemini", lambda: generate_gemini_content(system_instruction, user_data).text)
+    groq = (
+        "groq",
+        lambda: generate_groq_content(
+            system_instruction, user_data, max_tokens=400, timeout=LLM_TIMEOUT_SECONDS
+        )
+        .choices[0]
+        .message.content,
+    )
+
+    if choice is None:
+        attempts = [ollama(OLLAMA_MODEL) if AI_PROVIDER == "ollama" else gemini, groq]
+    elif choice[0] == "ollama":
+        # Thinking can use up its budget before answering; then the same local
+        # model answers without it, still on this computer.
+        attempts = [ollama(choice[1], True), ollama(choice[1])] if think else [ollama(choice[1])]
+    elif choice[0] == "groq":
+        attempts = [groq, gemini]
+    else:
+        attempts = [gemini, groq]
+
     for provider, attempt in attempts:
         try:
             reply = " ".join((attempt() or "").split())
@@ -118,15 +162,31 @@ def _url(path: str) -> str:
 
 
 async def talk(
-    mentor: str, message: str, history: list[dict], lesson: dict | None = None
+    mentor: str,
+    message: str,
+    history: list[dict],
+    lesson: dict | None = None,
+    choice: tuple[str, str] | None = None,
+    think: bool = False,
 ) -> AsyncIterator[dict]:
-    """Yield the reply text, then one chunk per spoken sentence, then "done"."""
+    """Yield the reply text, then one chunk per spoken sentence, then "done".
+
+    ``choice`` and ``think`` are the learner's picks; see ``write_reply``.
+    """
     _clean_old_sessions()
     session_dir = os.path.join(TALK_DIR, uuid.uuid4().hex)
     os.makedirs(session_dir)
 
-    reply, provider = await asyncio.to_thread(write_reply, mentor, message, history, lesson)
+    reply, provider = await asyncio.to_thread(
+        write_reply, mentor, message, history, lesson, choice, think
+    )
     yield {"type": "reply", "text": reply, "provider": provider}
+
+    # On one GPU, a local model left loaded starves the voice and face workers
+    # (8 GB holds all three only barely). Unload it while they make the media.
+    if provider == "ollama" and (config.VOICE_WORKER_URL or config.FACE_WORKER_URL):
+        model = choice[1] if choice and choice[0] == "ollama" else OLLAMA_MODEL
+        await asyncio.to_thread(release_ollama_model, model)
 
     teaching = bool(lesson) and not message
     sentences = split_sentences(reply)[: MAX_LESSON_SENTENCES if teaching else MAX_REPLY_SENTENCES]

@@ -5,7 +5,7 @@ import logging
 from typing import Any
 from fastapi import HTTPException
 
-from backend.config import GEMINI_MODEL, LLM_TIMEOUT_SECONDS
+from backend.config import AI_PROVIDER, GEMINI_MODEL, LLM_TIMEOUT_SECONDS
 from backend.schemas.lessons import (
     ExplainCodeRequest,
     Flashcard,
@@ -31,6 +31,10 @@ from backend.services.providers.groq_provider import (
     generate_groq_content,
     get_groq_client,
 )
+from backend.services.providers.ollama_provider import (
+    OllamaProvider,
+    generate_ollama_content,
+)
 from backend.utils.logging_utils import log_event, short_error
 from backend.services.providers.validation import (
     ProviderGenerationError,
@@ -41,13 +45,28 @@ logger = logging.getLogger(__name__)
 
 gemini_provider = GeminiProvider()
 groq_provider = GroqProvider()
+ollama_provider = OllamaProvider()
+
+
+def primary_provider() -> GeminiProvider:
+    """The provider chosen by AI_PROVIDER; Groq is the fallback for either."""
+    return ollama_provider if AI_PROVIDER == "ollama" else gemini_provider
+
+
+def _primary_text(
+    system_instruction: str, user_data: dict[str, Any], *, expect: str
+) -> str:
+    """Reply text from the primary provider, for the quiz and flashcard loops."""
+    if AI_PROVIDER == "ollama":
+        return generate_ollama_content(system_instruction, user_data, expect=expect)
+    return generate_gemini_content(system_instruction, user_data).text
 
 
 def generate_lesson_script(data: LessonRequest) -> tuple[str, str, str]:
-    """Generate lesson script using Gemini, falling back to Groq upon failure."""
+    """Generate lesson script using the primary provider, falling back to Groq."""
     gemini_failure = ""
     try:
-        script, provider, model = gemini_provider.generate_lesson_script(data)
+        script, provider, model = primary_provider().generate_lesson_script(data)
         return validate_lesson_script(script), provider, model
     except Exception as gemini_error:
         gemini_failure = short_error(gemini_error)
@@ -70,9 +89,9 @@ def generate_lesson_script(data: LessonRequest) -> tuple[str, str, str]:
 
 
 def generate_syllabus(data: SyllabusRequest) -> dict[str, Any]:
-    """Generate course syllabus using Gemini, falling back to Groq upon failure."""
+    """Generate course syllabus using the primary provider, falling back to Groq."""
     try:
-        return gemini_provider.generate_syllabus(data)
+        return primary_provider().generate_syllabus(data)
     except Exception as gemini_error:
         log_event(
             "WARN",
@@ -128,12 +147,10 @@ def generate_quiz(data: QuizRequest) -> QuizResponse | dict[str, Any]:
             log_event("RUN", "Generating quiz", attempt=f"{attempt + 1}/2")
 
             try:
-                log_event("RUN", "Trying Gemini")
-                response = generate_gemini_content(
-                    system_instruction,
-                    user_data,
-                )
-                text = response.text.strip()
+                log_event("RUN", "Trying Gemini", provider=AI_PROVIDER)
+                text = _primary_text(
+                    system_instruction, user_data, expect="object"
+                ).strip()
             except Exception as gemini_error:
                 log_event("WARN", "Gemini quiz generation failed", error=short_error(gemini_error))
                 log_event("RUN", "Trying Groq fallback")
@@ -207,13 +224,13 @@ def generate_flashcards(data: FlashcardRequest) -> list[Flashcard]:
     for attempt in range(2):
         try:
             try:
-                response = generate_gemini_content(
-                    system_instruction,
-                    user_data,
-                )
-                text = response.text.strip()
+                text = _primary_text(
+                    system_instruction, user_data, expect="array"
+                ).strip()
             except Exception as gemini_error:
-                logger.warning("Gemini flashcard generation failed: %s", gemini_error)
+                logger.warning(
+                    "%s flashcard generation failed: %s", AI_PROVIDER, gemini_error
+                )
                 if not get_groq_client():
                     raise
                 groq_response = generate_groq_content(
@@ -250,11 +267,11 @@ def generate_flashcards(data: FlashcardRequest) -> list[Flashcard]:
 
 
 def explain_code(data: ExplainCodeRequest) -> dict[str, Any]:
-    """Explain, debug, or optimize code using Gemini with Groq fallback."""
+    """Explain, debug, or optimize code using the primary provider with Groq fallback."""
     try:
-        return gemini_provider.explain_code(data)
+        return primary_provider().explain_code(data)
     except Exception as gemini_error:
-        print(f"Gemini failed: {gemini_error}. Trying Groq...")
+        print(f"{AI_PROVIDER} failed: {gemini_error}. Trying Groq...")
         try:
             return groq_provider.explain_code(data)
         except Exception as groq_error:

@@ -121,12 +121,16 @@ class GroqProvider(BaseAIProvider):
         provided in the JSON data. Respond with ONLY a valid JSON object, without
         markdown or code fences, using this structure:
         {{
-          "title": "Module 1: Introduction",
-          "lessons": [
+          "modules": [
             {{
-              "title": "Lesson 1: Basics",
-              "duration": "5 mins",
-              "type": "video"
+              "title": "Module 1: Introduction",
+              "lessons": [
+                {{
+                  "title": "Lesson 1: Basics",
+                  "duration": "5 mins",
+                  "type": "video"
+                }}
+              ]
             }}
           ]
         }}

@@ -28,6 +28,7 @@ const NotFound = lazy(() => import("./pages/NotFound"));
 const DocumentationPage = lazy(() => import("./pages/Documentation/DocumentationPage"));
 const MentorClassroom = lazy(() => import("./pages/MentorClassroom"));
 const MentorStudio = lazy(() => import("./pages/MentorStudio"));
+const MentorSettings = lazy(() => import("./pages/MentorSettings"));
 const MentorPreviewLayout = lazy(() => import("./components/mentor/MentorPreviewLayout"));
 
 // Local preview: open the live mentor pages without signing in (set in .env, off by default).
@@ -37,6 +38,7 @@ const mentorRoutes = (
     <Route path="/mentor" element={<MentorClassroom />} />
     <Route path="/mentor/:courseId" element={<MentorClassroom />} />
     <Route path="/mentor-studio" element={<MentorStudio />} />
+    <Route path="/mentor-settings" element={<MentorSettings />} />
   </>
 );
 

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
+  Brain,
   ChevronLeft,
   ChevronRight,
   GraduationCap,
   Mic,
   Send,
+  SlidersHorizontal,
   Square,
   UserPlus,
 } from "lucide-react";
@@ -14,6 +16,7 @@ import MentorStage from "../components/mentor/MentorStage";
 import {
   flattenLessons,
   listMentors,
+  listModels,
   loadCourseContent,
   streamTalk,
   workerStatus,
@@ -23,7 +26,17 @@ import "../components/mentor/mentor.css";
 
 const QUICK_PROMPTS = ["Give me an everyday example", "Explain it more simply", "Quiz me on this"];
 const MENTOR_KEY = "ai-mentor-live-mentor";
+const MODEL_KEY = "ai-mentor-live-model";
+const THINK_KEY = "ai-mentor-live-think";
 const describe = (values) => [...values].filter(Boolean).join(" / ") || "none";
+const modelKey = (option) => `${option.provider}|${option.model}`;
+const savedModel = () => {
+  try {
+    return JSON.parse(localStorage.getItem(MODEL_KEY));
+  } catch {
+    return null;
+  }
+};
 
 export default function MentorClassroom() {
   const { courseId = "1" } = useParams();
@@ -45,6 +58,30 @@ export default function MentorClassroom() {
   const [busy, setBusy] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [listening, setListening] = useState(false);
+  const [modelChoices, setModelChoices] = useState(null);
+  const [modelPick, setModelPick] = useState(savedModel);
+
+  // The AI that writes the mentor's replies: the learner's pick when it is still
+  // usable, else the service's default, else any usable model.
+  const modelOptions = modelChoices?.options || [];
+  const usableModels = modelOptions.filter((option) => option.available);
+  const findUsable = (choice) =>
+    choice &&
+    usableModels.find(
+      (option) => option.provider === choice.provider && option.model === choice.model,
+    );
+  const activeModel =
+    findUsable(modelPick) || findUsable(modelChoices?.default) || usableModels[0] || null;
+  const modelSource = activeModel?.source || "local";
+  // "Think first" is remembered, but only applies to a model that can think.
+  const [thinkOn, setThinkOn] = useState(() => localStorage.getItem(THINK_KEY) === "true");
+  const canThink = Boolean(activeModel?.thinking);
+  const thinking = thinkOn && canThink;
+  const toggleThink = () => {
+    const next = !thinkOn;
+    setThinkOn(next);
+    localStorage.setItem(THINK_KEY, String(next));
+  };
 
   const lessons = useMemo(() => flattenLessons(course?.modules), [course]);
   const lessonIndex = lessons.findIndex((lesson) => lesson.id === currentLesson?.id);
@@ -69,6 +106,12 @@ export default function MentorClassroom() {
 
   // Mentors and worker status
   const refreshService = useCallback(async () => {
+    // The model list is optional: without it, replies use the service's default.
+    listModels()
+      .then((choices) => {
+        if (Array.isArray(choices?.options)) setModelChoices(choices);
+      })
+      .catch(() => {});
     try {
       const [list, status] = await Promise.all([listMentors(), workerStatus()]);
       setMentors(list);
@@ -112,6 +155,17 @@ export default function MentorClassroom() {
     localStorage.setItem(MENTOR_KEY, name);
   };
 
+  const chooseModel = (option) => {
+    if (!option) return;
+    const pick = { provider: option.provider, model: option.model };
+    setModelPick(pick);
+    localStorage.setItem(MODEL_KEY, JSON.stringify(pick));
+  };
+
+  // Switching between this computer and an online API picks that side's first usable model.
+  const chooseSource = (source) =>
+    chooseModel(usableModels.find((option) => option.source === source));
+
   const send = async ({ message = "", teach = false }) => {
     const text = message.trim();
     if (busy || !mentor || (!text && !teach)) return;
@@ -123,7 +177,7 @@ export default function MentorClassroom() {
     setMessages((list) => [
       ...list,
       { id: `${id}-q`, role: "learner", text: shown },
-      { id: `${id}-a`, role: "mentor", text: "", pending: true },
+      { id: `${id}-a`, role: "mentor", text: "", pending: true, thinking },
     ]);
     setBusy(true);
     setDraft("");
@@ -131,7 +185,10 @@ export default function MentorClassroom() {
     const controller = new AbortController();
     abortRef.current = controller;
     const used = { voice: new Set(), face: new Set() };
+    const sentWith = activeModel;
+    const sentThinking = thinking;
     let reply = "";
+    let answeredBy = "";
     const update = (patch) =>
       setMessages((list) =>
         list.map((item) => (item.id === `${id}-a` ? { ...item, ...patch } : item)),
@@ -143,10 +200,17 @@ export default function MentorClassroom() {
         message: text,
         lesson,
         history: historyRef.current.slice(-20),
+        provider: sentWith?.provider,
+        model: sentWith?.model,
+        think: sentThinking,
         signal: controller.signal,
         onEvent: (event) => {
           if (event.type === "reply") {
             reply = event.text;
+            answeredBy =
+              event.provider === "ollama" && sentWith?.provider === "ollama"
+                ? `${sentWith.model}${sentThinking ? " (thinking)" : ""}`
+                : event.provider;
             update({ text: reply, pending: false, provider: event.provider });
           } else if (event.type === "chunk") {
             used.voice.add(event.voice);
@@ -155,7 +219,9 @@ export default function MentorClassroom() {
           }
         },
       });
-      update({ meta: `Voice: ${describe(used.voice)} · Face: ${describe(used.face)}` });
+      update({
+        meta: `AI: ${answeredBy || "none"} · Voice: ${describe(used.voice)} · Face: ${describe(used.face)}`,
+      });
       historyRef.current.push({ role: "learner", text: shown }, { role: "mentor", text: reply });
     } catch (error) {
       if (error.name !== "AbortError") {
@@ -251,6 +317,55 @@ export default function MentorClassroom() {
               ))}
             </select>
           </label>
+          <label className="mt-status">
+            <span className="sr-only">Run on</span>
+            <select
+              className="mt-select"
+              value={modelSource}
+              onChange={(event) => chooseSource(event.target.value)}
+              disabled={!usableModels.length || busy}
+              aria-label="Run on"
+              title="Where the mentor's replies are written"
+            >
+              <option
+                value="local"
+                disabled={!usableModels.some((option) => option.source === "local")}
+              >
+                This computer
+              </option>
+              <option
+                value="api"
+                disabled={!usableModels.some((option) => option.source === "api")}
+              >
+                Online API
+              </option>
+            </select>
+          </label>
+          <label className="mt-status">
+            <span className="sr-only">AI model</span>
+            <select
+              className="mt-select"
+              value={activeModel ? modelKey(activeModel) : ""}
+              onChange={(event) =>
+                chooseModel(modelOptions.find((option) => modelKey(option) === event.target.value))
+              }
+              disabled={!usableModels.length || busy}
+              aria-label="AI model"
+            >
+              {!activeModel && <option value="">Default model</option>}
+              {modelOptions
+                .filter((option) => option.source === modelSource)
+                .map((option) => (
+                  <option
+                    key={modelKey(option)}
+                    value={modelKey(option)}
+                    disabled={!option.available}
+                  >
+                    {option.available ? option.label : `${option.label} (no API key)`}
+                  </option>
+                ))}
+            </select>
+          </label>
           <div className="mt-status" aria-live="polite">
             <span>
               <span className="mt-dot" data-state={ownVoice ? "ok" : "idle"} />
@@ -265,6 +380,9 @@ export default function MentorClassroom() {
             <Link className="lw-button" to="/mentor-studio">
               <UserPlus size={17} aria-hidden="true" />
               <span>Create a mentor</span>
+            </Link>
+            <Link className="lw-button" to="/mentor-settings" aria-label="AI settings">
+              <SlidersHorizontal size={17} aria-hidden="true" />
             </Link>
           </div>
         </div>
@@ -321,12 +439,31 @@ export default function MentorClassroom() {
               )}
               {messages.map((item) => (
                 <div key={item.id} className="mt-msg" data-role={item.role}>
-                  {item.pending ? "Thinking…" : item.text}
+                  {item.pending
+                    ? item.thinking
+                      ? "Thinking it through… this can take a few minutes."
+                      : "Thinking…"
+                    : item.text}
                   {item.meta && <div className="mt-msg-meta">{item.meta}</div>}
                 </div>
               ))}
             </div>
             <div className="mt-chips">
+              <button
+                type="button"
+                className="mt-chip mt-chip--toggle"
+                aria-pressed={thinking}
+                disabled={!canThink || busy}
+                onClick={toggleThink}
+                title={
+                  canThink
+                    ? "Let the model reason before it answers: slower, often better"
+                    : "The selected model cannot think step by step (try qwen3.5)"
+                }
+              >
+                <Brain size={14} aria-hidden="true" />
+                <span>Think first</span>
+              </button>
               {QUICK_PROMPTS.map((prompt) => (
                 <button
                   key={prompt}
