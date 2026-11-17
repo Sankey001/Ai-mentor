@@ -188,6 +188,16 @@ A lesson pack is a lesson prepared ahead of time: a script (written by `LESSON_S
 
 Packs are stored in `outputs/lesson_packs/<mentor>/` (not in git) and named after what they were made from, so a new personality rewrites scripts, a new voice recording re-voices them, new photos only re-make the clips, and anything already made is kept when preparation stops and resumes.
 
+### Voice bank
+
+When a mentor is set up, about 500 phrases from `backend/data/phrases.txt` are recorded once in its voice, with lip-sync: openers ("Great question."), transitions, checks, encouragement, closers, and short sentences with technical words. Every sentence the mentor then says in a live answer is kept as well. A sentence the bank already holds plays at once without the GPU, so answers start sooner and get faster the more the mentor is used. The AI is told which recorded openers it may begin an answer with.
+
+Recording runs in the background after lessons being prepared and between live questions; the Studio shows its progress and can start or stop it. The bank shares the lesson packs' folder and media, and sentences are matched ignoring case, spacing and quote style. Add or change phrases in `phrases.txt`; only new ones are recorded.
+
+### Mentor kits
+
+A kit is one `.zip` with a mentor's folder and everything made from it (voice bank and prepared lessons). "Save as a kit" in the Studio writes `mentor_kits/<name>.zip` next to `ai_service`; copy it into the same folder on another computer and press "Import kits" (kits are also imported when the app starts). Media is named after the content of the voice and clips, not file dates, so everything in a kit plays at once on the new computer. Kits contain the voice recording, so they are never sent through the web page and the folder is not in git.
+
 ### Fallbacks
 
 Every step has a backup, so a failure lowers quality instead of stopping the mentor:
@@ -245,34 +255,39 @@ For direct debugging only, the underlying entry point is `ai_service/backend/gra
 
 ## Main API routes
 
-| Method   | Route                           | Purpose                                                                                  |
-| -------- | ------------------------------- | ---------------------------------------------------------------------------------------- |
-| `GET`    | `/`                             | Basic service response used for readiness checks                                         |
-| `POST`   | `/generate`                     | Queue lesson script, narration, video, and subtitle generation                           |
-| `POST`   | `/generate-quiz`                | Generate a multiple-choice quiz from lesson text                                         |
-| `POST`   | `/explain-code`                 | Explain, debug, or optimize submitted code                                               |
-| `GET`    | `/status/{job_id}`              | Return generation status and generated asset metadata                                    |
-| `GET`    | `/transcript/{filename}`        | Return a generated transcript                                                            |
-| `POST`   | `/generate-syllabus`            | Generate a structured course syllabus                                                    |
-| `POST`   | `/generate-flashcards`          | Generate study flashcards from a lesson transcript                                       |
-| `GET`    | `/voices`                       | Return available narration voices                                                        |
-| `GET`    | `/video-stream/{filename}`      | Serve a local generated video when cloud delivery is unavailable                         |
-| `GET`    | `/transcript-stream/{filename}` | Serve a local transcript file                                                            |
-| `POST`   | `/talk`                         | Live conversation: streams the mentor's reply sentence by sentence as Server-Sent Events |
-| `GET`    | `/talk/status`                  | Report whether the voice and face workers are running                                    |
-| `POST`   | `/lesson-packs/prepare`         | Prepare lessons for a mentor in the background (`urgent` ones first)                     |
-| `POST`   | `/lesson-packs/status`          | Progress of a mentor's lesson packs: ready, waiting, time left, size on disk             |
-| `POST`   | `/lesson-packs/pack`            | The sentences and clips of one prepared lesson, ready to play                            |
-| `DELETE` | `/lesson-packs/{mentor}/queue`  | Stop preparing a mentor's lessons; finished ones are kept                                |
-| `GET`    | `/pack-media/{mentor}/{file}`   | Serve one audio file or clip of a lesson pack                                            |
-| `GET`    | `/mentors`                      | List mentors with their voice type and preparation state                                 |
-| `POST`   | `/mentors`                      | Create a mentor from uploaded images and an optional voice recording                     |
-| `GET`    | `/mentors/{name}`               | Return one mentor's settings and photo names for editing                                 |
-| `PATCH`  | `/mentors/{name}`               | Edit an uploaded mentor: personality, delivery, standard voice, photos, voice recording  |
-| `GET`    | `/mentors/{name}/images/{file}` | Serve one of the mentor's photos                                                         |
-| `DELETE` | `/mentors/{name}`               | Remove a mentor that was created by upload                                               |
-| `GET`    | `/mentors/{name}/idle.mp4`      | Serve the mentor's idle clip                                                             |
-| `GET`    | `/app`                          | Basic live-conversation page                                                             |
+| Method   | Route                                  | Purpose                                                                                  |
+| -------- | -------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `GET`    | `/`                                    | Basic service response used for readiness checks                                         |
+| `POST`   | `/generate`                            | Queue lesson script, narration, video, and subtitle generation                           |
+| `POST`   | `/generate-quiz`                       | Generate a multiple-choice quiz from lesson text                                         |
+| `POST`   | `/explain-code`                        | Explain, debug, or optimize submitted code                                               |
+| `GET`    | `/status/{job_id}`                     | Return generation status and generated asset metadata                                    |
+| `GET`    | `/transcript/{filename}`               | Return a generated transcript                                                            |
+| `POST`   | `/generate-syllabus`                   | Generate a structured course syllabus                                                    |
+| `POST`   | `/generate-flashcards`                 | Generate study flashcards from a lesson transcript                                       |
+| `GET`    | `/voices`                              | Return available narration voices                                                        |
+| `GET`    | `/video-stream/{filename}`             | Serve a local generated video when cloud delivery is unavailable                         |
+| `GET`    | `/transcript-stream/{filename}`        | Serve a local transcript file                                                            |
+| `POST`   | `/talk`                                | Live conversation: streams the mentor's reply sentence by sentence as Server-Sent Events |
+| `GET`    | `/talk/status`                         | Report whether the voice and face workers are running                                    |
+| `POST`   | `/lesson-packs/prepare`                | Prepare lessons for a mentor in the background (`urgent` ones first)                     |
+| `POST`   | `/lesson-packs/status`                 | Progress of a mentor's lesson packs: ready, waiting, time left, size on disk             |
+| `POST`   | `/lesson-packs/pack`                   | The sentences and clips of one prepared lesson, ready to play                            |
+| `DELETE` | `/lesson-packs/{mentor}/queue`         | Stop preparing a mentor's lessons; finished ones are kept                                |
+| `GET`    | `/pack-media/{mentor}/{file}`          | Serve one audio file or clip of a lesson pack or the voice bank                          |
+| `GET`    | `/mentors/{name}/voice-bank`           | Voice bank progress: phrases recorded, sentences kept from answers, size                 |
+| `POST`   | `/mentors/{name}/voice-bank`           | Record the mentor's phrases in the background                                            |
+| `DELETE` | `/mentors/{name}/voice-bank/recording` | Stop recording phrases; what is recorded is kept                                         |
+| `POST`   | `/mentors/{name}/kit`                  | Save the mentor and its voice bank to `mentor_kits/<name>.zip`                           |
+| `POST`   | `/mentor-kits/import`                  | Import the kits in the `mentor_kits` folder                                              |
+| `GET`    | `/mentors`                             | List mentors with their voice type and preparation state                                 |
+| `POST`   | `/mentors`                             | Create a mentor from uploaded images and an optional voice recording                     |
+| `GET`    | `/mentors/{name}`                      | Return one mentor's settings and photo names for editing                                 |
+| `PATCH`  | `/mentors/{name}`                      | Edit an uploaded mentor: personality, delivery, standard voice, photos, voice recording  |
+| `GET`    | `/mentors/{name}/images/{file}`        | Serve one of the mentor's photos                                                         |
+| `DELETE` | `/mentors/{name}`                      | Remove a mentor that was created by upload                                               |
+| `GET`    | `/mentors/{name}/idle.mp4`             | Serve the mentor's idle clip                                                             |
+| `GET`    | `/app`                                 | Basic live-conversation page                                                             |
 
 Use the running service's FastAPI documentation for the current request and response schemas.
 

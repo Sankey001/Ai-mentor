@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -35,6 +36,23 @@ os.makedirs(talk_output_path, exist_ok=True)
 async def lifespan(app: FastAPI):
     check_ffmpeg()
     job_tracker.shutting_down = False
+    # Mentor kits copied into the mentor_kits folder are set up on start.
+    from backend.services import mentor_kits
+
+    try:
+        result = mentor_kits.import_waiting()
+        for kit in result["imported"]:
+            logger.info("Imported mentor kit: %s", kit["name"])
+        for kit in result["failed"]:
+            logger.warning("Mentor kit %s was not imported: %s", kit["file"], kit["error"])
+    except OSError as error:
+        logger.warning("Mentor kits could not be checked: %s", error)
+    # Load the local model now, so the first question does not wait for it.
+    from backend import config
+    from backend.services.providers.ollama_provider import load_ollama_model
+
+    if config.AI_PROVIDER == "ollama":
+        asyncio.get_running_loop().run_in_executor(None, load_ollama_model, config.OLLAMA_MODEL)
     yield
 
     job_tracker.shutting_down = True

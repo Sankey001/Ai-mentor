@@ -13,6 +13,7 @@ import {
   UserPlus,
 } from "lucide-react";
 import LessonPicker from "../components/learning/LessonPicker";
+import LessonNotes from "../components/mentor/LessonNotes";
 import MentorStage from "../components/mentor/MentorStage";
 import {
   flattenLessons,
@@ -37,7 +38,8 @@ const MENTOR_KEY = "ai-mentor-live-mentor";
 const MODEL_KEY = "ai-mentor-live-model";
 const THINK_KEY = "ai-mentor-live-think";
 const PACK_POLL_MS = 3000;
-const LESSONS_AHEAD = 5; // prepared after the open lesson, before the learner reaches them
+const LESSONS_AHEAD = 20; // kept prepared after the open lesson
+const LESSONS_PER_STEP = 5; // asked for at a time, so the nearest ones are ready first
 const PACK_LABEL = { ready: "Ready to play", preparing: "Being prepared", failed: "Not prepared" };
 const describe = (values) => [...values].filter(Boolean).join(" / ") || "none";
 const modelKey = (option) => `${option.provider}|${option.model}`;
@@ -75,6 +77,8 @@ export default function MentorClassroom() {
   const [modelChoices, setModelChoices] = useState(null);
   const [modelPick, setModelPick] = useState(savedModel);
   const [packs, setPacks] = useState(null);
+  // The prepared lesson sentence being spoken: { message, step }.
+  const [spoken, setSpoken] = useState(null);
 
   // The AI that writes the mentor's replies: the learner's pick when it is still
   // usable, else the service's default, else any usable model.
@@ -170,7 +174,7 @@ export default function MentorClassroom() {
   const refreshPacks = useCallback(async () => {
     if (!mentor || !courseLessons.length) return setPacks(null);
     try {
-      setPacks(await packStatus(mentor, courseLessons));
+      setPacks({ ...(await packStatus(mentor, courseLessons)), mentor });
     } catch {
       // Without prepared lessons the mentor teaches live.
     }
@@ -187,16 +191,44 @@ export default function MentorClassroom() {
     return () => clearInterval(timer);
   }, [preparing, refreshPacks]);
 
-  // Opening a chapter prepares it first, then the lessons that follow it, in the
-  // background, so they are ready by the time the learner gets there.
+  // The open lesson and the LESSONS_AHEAD after it are kept prepared in the
+  // background: on opening a lesson, it goes first, then the next few unprepared
+  // lessons after it; each time those are done, the next few, until all are ready.
+  const queuedForRef = useRef("");
+  const aheadStates = packs?.mentor === mentor ? packs.lessons : null;
+  const ahead = useMemo(() => {
+    if (!aheadStates || aheadStates.length !== courseLessons.length || lessonIndex < 0) return null;
+    const end = Math.min(courseLessons.length, lessonIndex + 1 + LESSONS_AHEAD);
+    const missing = [];
+    for (let index = lessonIndex + 1; index < end; index += 1) {
+      if (aheadStates[index]?.state === "missing") missing.push(index);
+    }
+    return {
+      current: aheadStates[lessonIndex]?.state === "missing",
+      missing,
+      ready: aheadStates.slice(lessonIndex + 1, end).filter((item) => item.state === "ready")
+        .length,
+      size: end - lessonIndex - 1,
+    };
+  }, [aheadStates, courseLessons.length, lessonIndex]);
+
   useEffect(() => {
-    if (!mentor || lessonIndex < 0) return;
-    const ahead = courseLessons.slice(lessonIndex + 1, lessonIndex + 1 + LESSONS_AHEAD);
-    preparePacks(mentor, [courseLessons[lessonIndex]], { urgent: true })
-      .then(() => ahead.length && preparePacks(mentor, ahead))
+    if (!mentor || !ahead) return;
+    const place = `${mentor}|${lessonIndex}`;
+    const moved = queuedForRef.current !== place;
+    // On the same lesson, the next few are asked for only once the last few are done.
+    if (!moved && packs.preparing > 0) return;
+    queuedForRef.current = place;
+    const next = ahead.missing.slice(0, LESSONS_PER_STEP).map((index) => courseLessons[index]);
+    if (!ahead.current && !next.length) return;
+    (ahead.current
+      ? preparePacks(mentor, [courseLessons[lessonIndex]], { urgent: true })
+      : Promise.resolve()
+    )
+      .then(() => next.length && preparePacks(mentor, next))
       .then(refreshPacks)
       .catch(() => {});
-  }, [mentor, lessonIndex, courseLessons, refreshPacks]);
+  }, [mentor, lessonIndex, ahead, packs?.preparing, courseLessons, refreshPacks]);
 
   // A lesson that is playing belongs to its chapter: leaving the chapter ends it.
   useEffect(() => {
@@ -207,7 +239,7 @@ export default function MentorClassroom() {
 
   const prepareCourse = () =>
     preparePacks(mentor, courseLessons)
-      .then(setPacks)
+      .then((status) => setPacks({ ...status, mentor }))
       .catch(() => {});
   const stopPreparingCourse = () =>
     stopPreparing(mentor)
@@ -346,6 +378,7 @@ export default function MentorClassroom() {
         id: `${id}-a`,
         role: "mentor",
         text,
+        lesson: { title: currentLesson.title, sentences: pack.sentences },
         meta: `Prepared lesson · Voice: ${describe(voices)} · Face: ${describe(faces)}`,
       },
     ]);
@@ -354,7 +387,7 @@ export default function MentorClassroom() {
       { role: "learner", text: shown },
       { role: "mentor", text: text.slice(0, 600) },
     );
-    lessonRef.current = { sentences: pack.sentences, next: 0, paused: false };
+    lessonRef.current = { sentences: pack.sentences, next: 0, paused: false, message: `${id}-a` };
     playLesson(0);
     return undefined;
   };
@@ -538,21 +571,51 @@ export default function MentorClassroom() {
         </div>
 
         {packs && (
-          <div className="mt-prepare" role="status">
+          <section className="mt-prepare" role="status" aria-label="Prepared lessons">
             <progress
               className="mt-progress"
               value={packs.ready}
               max={packs.total}
-              aria-label="Prepared lessons"
+              aria-label="Lessons prepared"
             />
-            <span>
-              {packs.ready} of {packs.total} lessons prepared
-              {packs.bytes > 0 && ` · ${formatSize(packs.bytes)} on disk`}
-              {preparing &&
-                ` · ${packs.preparing} to go, ${formatTimeLeft(packs.seconds_left)} left`}
-            </span>
-            {preparing && packs.doing && <span className="mt-prepare-doing">{packs.doing}</span>}
-          </div>
+            <dl className="mt-prepare-list">
+              <div>
+                <dt>Prepared</dt>
+                <dd>
+                  {packs.ready} of {packs.total} lessons
+                </dd>
+              </div>
+              {ahead && ahead.size > 0 && (
+                <div>
+                  <dt>Next {ahead.size}</dt>
+                  <dd>
+                    {ahead.ready} of {ahead.size} ready
+                  </dd>
+                </div>
+              )}
+              {preparing && (
+                <div>
+                  <dt>To go</dt>
+                  <dd>
+                    {packs.preparing} {packs.preparing === 1 ? "lesson" : "lessons"},{" "}
+                    {formatTimeLeft(packs.seconds_left)} left
+                  </dd>
+                </div>
+              )}
+              {preparing && packs.doing && (
+                <div>
+                  <dt>Now</dt>
+                  <dd className="mt-prepare-doing">{packs.doing}</dd>
+                </div>
+              )}
+              {packs.bytes > 0 && (
+                <div>
+                  <dt>On disk</dt>
+                  <dd>{formatSize(packs.bytes)}</dd>
+                </div>
+              )}
+            </dl>
+          </section>
         )}
 
         <div className="mt-workspace">
@@ -566,6 +629,9 @@ export default function MentorClassroom() {
                 onChunkStart={(chunk) => {
                   if (lessonRef.current && chunk.lessonStep !== undefined) {
                     lessonRef.current.next = chunk.lessonStep + 1;
+                    setSpoken({ message: lessonRef.current.message, step: chunk.lessonStep });
+                  } else {
+                    setSpoken(null);
                   }
                 }}
               />
@@ -621,12 +687,27 @@ export default function MentorClassroom() {
                 </p>
               )}
               {messages.map((item) => (
-                <div key={item.id} className="mt-msg" data-role={item.role}>
-                  {item.pending
-                    ? item.thinking
-                      ? "Thinking it through… this can take a few minutes."
-                      : "Thinking…"
-                    : item.text}
+                <div
+                  key={item.id}
+                  className="mt-msg"
+                  data-role={item.role}
+                  data-lesson={item.lesson ? "" : undefined}
+                >
+                  {item.pending ? (
+                    item.thinking ? (
+                      "Thinking it through… this can take a few minutes."
+                    ) : (
+                      "Thinking…"
+                    )
+                  ) : item.lesson ? (
+                    <LessonNotes
+                      title={item.lesson.title}
+                      sentences={item.lesson.sentences}
+                      current={speaking && spoken?.message === item.id ? spoken.step : -1}
+                    />
+                  ) : (
+                    item.text
+                  )}
                   {item.meta && <div className="mt-msg-meta">{item.meta}</div>}
                 </div>
               ))}

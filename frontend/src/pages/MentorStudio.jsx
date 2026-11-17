@@ -1,14 +1,35 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowLeft, ImagePlus, Mic, Pencil, Square, Trash2, Undo2, Upload, X } from "lucide-react";
+import {
+  ArrowLeft,
+  AudioLines,
+  Download,
+  ImagePlus,
+  Mic,
+  PackageOpen,
+  Pencil,
+  Square,
+  Trash2,
+  Undo2,
+  Upload,
+  X,
+} from "lucide-react";
 import {
   MAX_IMAGES,
   MAX_PERSONA_CHARS,
   createMentor,
   deleteMentor,
+  exportKit,
   formatPitch,
   formatRate,
+  formatSize,
+  formatTimeLeft,
   getMentor,
+  importKits,
+  kitsFolder,
+  recordVoiceBank,
+  stopVoiceBank,
+  voiceBankStatus,
   listMentors,
   listVoices,
   mentorImageUrl,
@@ -33,6 +54,22 @@ const emptyForm = {
 };
 // What an edited mentor already has on the server.
 const emptySaved = { images: [], ownVoice: false };
+
+// One line about a mentor's voice bank, in the words the Studio shows.
+const describeBank = (bank) => {
+  if (!bank) return "";
+  const parts = [`${bank.ready} of ${bank.total} phrases recorded`];
+  if (bank.kept) parts.push(`${bank.kept} kept from answers`);
+  if (bank.bytes) parts.push(formatSize(bank.bytes));
+  if (bank.building) {
+    parts.push(
+      bank.waiting_for_lessons
+        ? "waiting for lessons being prepared"
+        : `${formatTimeLeft(bank.seconds_left)} left`,
+    );
+  }
+  return parts.join(" · ");
+};
 
 function Thumb({ src, label, removed, onToggle, toggleLabel }) {
   const [broken, setBroken] = useState(false);
@@ -75,6 +112,9 @@ export default function MentorStudio() {
   const [dragging, setDragging] = useState(false);
   const [recording, setRecording] = useState(false);
   const [voiceUrl, setVoiceUrl] = useState("");
+  const [banks, setBanks] = useState({});
+  const [kits, setKits] = useState("");
+  const [kitNotice, setKitNotice] = useState("");
   const recorderRef = useRef(null);
   const fileInputRef = useRef(null);
   const formRef = useRef(null);
@@ -99,6 +139,35 @@ export default function MentorStudio() {
     const timer = setInterval(refresh, preparing ? 4000 : 15000);
     return () => clearInterval(timer);
   }, [refresh, preparing]);
+
+  // Each ready mentor's voice bank; checked more often while one is recording.
+  const readyNames = mentors
+    .filter((mentor) => mentor.state === "ready")
+    .map((mentor) => mentor.name)
+    .join(",");
+  const refreshBanks = useCallback(async () => {
+    const names = readyNames ? readyNames.split(",") : [];
+    const found = await Promise.all(
+      names.map((name) =>
+        voiceBankStatus(name)
+          .then((bank) => [name, bank])
+          .catch(() => [name, null]),
+      ),
+    );
+    setBanks(Object.fromEntries(found));
+  }, [readyNames]);
+  const recordingBank = Object.values(banks).some((bank) => bank?.building);
+  useEffect(() => {
+    refreshBanks();
+    const timer = setInterval(refreshBanks, recordingBank ? 4000 : 15000);
+    return () => clearInterval(timer);
+  }, [refreshBanks, recordingBank]);
+
+  useEffect(() => {
+    kitsFolder()
+      .then((result) => setKits(result.folder))
+      .catch(() => setKits(""));
+  }, []);
 
   useEffect(() => {
     listVoices()
@@ -226,6 +295,43 @@ export default function MentorStudio() {
       if (editing === name) resetForm();
     } catch (error) {
       setSubmitError(error.message);
+    }
+    refresh();
+  };
+
+  const toggleRecording = async (name) => {
+    try {
+      if (banks[name]?.building) await stopVoiceBank(name);
+      else await recordVoiceBank(name);
+    } catch (error) {
+      setSubmitError(error.message);
+    }
+    refreshBanks();
+  };
+
+  const saveKit = async (name) => {
+    setKitNotice(`Saving ${name}…`);
+    try {
+      const kit = await exportKit(name);
+      setKitNotice(`Saved ${name} (${formatSize(kit.bytes)}) to ${kit.path}`);
+    } catch (error) {
+      setKitNotice(`${name} could not be saved. ${error.message}`);
+    }
+  };
+
+  const loadKits = async () => {
+    setKitNotice("Looking for kits…");
+    try {
+      const result = await importKits();
+      const lines = [
+        ...result.imported.map((kit) =>
+          kit.new_mentor ? `Added ${kit.name}.` : `Updated ${kit.name}'s voice bank.`,
+        ),
+        ...result.failed.map((kit) => `${kit.file}: ${kit.error}`),
+      ];
+      setKitNotice(lines.join(" ") || "No new kits in the folder.");
+    } catch (error) {
+      setKitNotice(`Kits could not be imported. ${error.message}`);
     }
     refresh();
   };
@@ -567,10 +673,53 @@ export default function MentorStudio() {
                       ? mentor.detail
                       : `${mentor.voice === "cloned" ? "Own voice" : "Standard voice"}${mentor.persona ? " · personality set" : ""}`}
                   </span>
+                  {banks[mentor.name] && (
+                    <span
+                      className="mt-help block"
+                      style={{ textTransform: "none", fontWeight: 400 }}
+                    >
+                      Voice bank: {describeBank(banks[mentor.name])}
+                      {banks[mentor.name].error && ` · ${banks[mentor.name].error}`}
+                    </span>
+                  )}
                 </span>
                 <span className="mt-badge" data-state={mentor.state}>
                   {STATE_LABEL[mentor.state] || mentor.state}
                 </span>
+                {banks[mentor.name] && (
+                  <>
+                    <button
+                      type="button"
+                      className="lw-icon-button"
+                      onClick={() => toggleRecording(mentor.name)}
+                      aria-label={
+                        banks[mentor.name].building
+                          ? `Stop recording ${mentor.name}'s phrases`
+                          : `Record ${mentor.name}'s phrases`
+                      }
+                      title={
+                        banks[mentor.name].building
+                          ? "Stop recording phrases (what is recorded is kept)"
+                          : "Record common phrases in this mentor's voice, so answers start sooner"
+                      }
+                    >
+                      {banks[mentor.name].building ? (
+                        <Square size={16} aria-hidden="true" />
+                      ) : (
+                        <AudioLines size={16} aria-hidden="true" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      className="lw-icon-button"
+                      onClick={() => saveKit(mentor.name)}
+                      aria-label={`Save ${mentor.name} as a kit`}
+                      title="Save this mentor and its voice bank as one file, to move it to another computer"
+                    >
+                      <Download size={16} aria-hidden="true" />
+                    </button>
+                  </>
+                )}
                 {mentor.uploaded && (
                   <>
                     <button
@@ -593,6 +742,27 @@ export default function MentorStudio() {
                 )}
               </div>
             ))}
+
+            <h2 className="text-base font-bold mt-4 mb-2">Move a mentor</h2>
+            <p className="mt-help mb-2">
+              A kit is one file with a mentor and its voice bank. Copy it into the kits folder on
+              the other computer, then import it there.
+              {kits && (
+                <>
+                  {" "}
+                  Kits folder: <code>{kits}</code>
+                </>
+              )}
+            </p>
+            <button type="button" className="lw-button" onClick={loadKits}>
+              <PackageOpen size={16} aria-hidden="true" />
+              <span>Import kits</span>
+            </button>
+            {kitNotice && (
+              <p className="mt-help mt-2" role="status" style={{ overflowWrap: "anywhere" }}>
+                {kitNotice}
+              </p>
+            )}
           </aside>
         </div>
       </div>

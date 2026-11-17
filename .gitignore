@@ -83,3 +83,6 @@ update.md
 
 # Local AI runtimes and model caches (lip sync, voice cloning); see REQUIREMENTS.md
 /local/
+
+# Mentor kits: a mentor with its voice recording and voice bank, moved between computers
+/mentor_kits/

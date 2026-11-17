@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 import api
 from backend import config
-from backend.services import lesson_packs, media_processor, talk
+from backend.services import lesson_packs, media_processor, talk, voice_bank
 from tests.test_talk import make_mentor
 
 LOOPS = {"course": "Python", "module": "Basics", "title": "Loops"}
@@ -31,7 +31,9 @@ def packs(tmp_path, monkeypatch):
     make_mentor(tmp_path, "asha", voice=True, persona="Kind.")
     state = {"calls": [], "scripts": {}, "voice": True, "face": True, "written": []}
 
-    def reply_pieces(mentor, message, history, lesson, choice, think=False, prepared=False):
+    def reply_pieces(
+        mentor, message, history, lesson, choice, think=False, prepared=False, **_kwargs
+    ):
         state["written"].append((lesson["title"], prepared))
         for word in state["scripts"].get(lesson["title"], SCRIPT).split(" "):
             yield "ollama", word + " "
@@ -56,11 +58,17 @@ def packs(tmp_path, monkeypatch):
     monkeypatch.setattr(talk.media_workers, "speak", speak)
     monkeypatch.setattr(talk.media_workers, "animate", animate)
     monkeypatch.setattr(talk, "generate_tts", stock_tts)
-    lesson_packs._queue.clear()
-    lesson_packs._failed.clear()
+    def forget_everything():
+        lesson_packs._queue.clear()
+        lesson_packs._failed.clear()
+        lesson_packs._migrated.clear()
+        voice_bank._banks.clear()
+        voice_bank._build["queue"].clear()
+        voice_bank._build["failed"].clear()
+
+    forget_everything()
     yield state
-    lesson_packs._queue.clear()
-    lesson_packs._failed.clear()
+    forget_everything()
 
 
 def prepare(lessons, mentor="asha", urgent=False):
@@ -365,7 +373,7 @@ def test_talk_endpoint_sends_the_prepared_script_with_a_question(packs, client, 
     prepare([LOOPS])
     seen = []
 
-    def reply_pieces(mentor, message, history, lesson, choice, think, script):
+    def reply_pieces(mentor, message, history, lesson, choice, think, script, **_kwargs):
         seen.append(script)
         yield "gemini", "Sure."
 

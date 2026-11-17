@@ -135,7 +135,7 @@ def test_only_a_large_local_model_is_unloaded_before_voice_and_face_work(
     calls = []
     monkeypatch.setattr(config, "FACE_WORKER_URL", worker_url)
     monkeypatch.setattr(talk, "TALK_DIR", str(tmp_path))
-    monkeypatch.setattr(talk, "reply_pieces", lambda *_args: iter([(provider, "Hello.")]))
+    monkeypatch.setattr(talk, "reply_pieces", lambda *_a, **_k: iter([(provider, "Hello.")]))
     monkeypatch.setattr(talk, "fits_beside_workers", lambda _model: fits)
     monkeypatch.setattr(talk, "release_ollama_model", calls.append)
     monkeypatch.setattr(talk, "get_mentor_clips", lambda _mentor: [])
@@ -215,7 +215,7 @@ def test_local_pick_uses_that_model_and_never_goes_online(monkeypatch):
 
     reply = talk.write_reply("ada", "hi", [], None, ("ollama", "qwen3.5:9b"))
 
-    assert calls == ["qwen3.5:9b"]
+    assert calls == ["qwen3.5:9b", "qwen3.5:9b"]  # tried twice, never online
     assert reply == (talk.FALLBACK_REPLY, "fallback")
 
 

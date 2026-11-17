@@ -127,6 +127,60 @@
   background: var(--color-canvas-alt);
   border: 1px solid var(--color-border);
 }
+.mt-msg[data-lesson] {
+  max-width: 100%;
+}
+.mt-lesson {
+  display: grid;
+  gap: 10px;
+}
+.mt-lesson-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--color-text-main);
+}
+.mt-lesson-glance {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.mt-lesson-glance caption {
+  margin-bottom: 4px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+.mt-lesson-glance th,
+.mt-lesson-glance td {
+  padding: 6px 8px;
+  border-top: 1px solid var(--color-border);
+  text-align: left;
+  vertical-align: top;
+}
+.mt-lesson-glance th {
+  width: 9.5em;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--color-text-main);
+}
+.mt-lesson-part h4 {
+  margin: 0 0 2px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-text-main);
+}
+.mt-lesson-part p {
+  margin: 0;
+}
+.mt-lesson mark {
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-primary) 22%, transparent);
+  color: inherit;
+}
 .mt-msg-meta {
   margin-top: 4px;
   font-size: 11px;
@@ -220,13 +274,38 @@
   gap: 6px;
 }
 .mt-prepare {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 12px;
+  display: grid;
+  gap: 8px;
+  padding: 10px 14px;
   margin-bottom: 12px;
-  font-size: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-card);
+  font-size: 13px;
   color: var(--color-text-muted);
+}
+.mt-prepare .mt-progress {
+  width: 100%;
+}
+.mt-prepare-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 6px 16px;
+  margin: 0;
+}
+.mt-prepare-list div {
+  display: grid;
+  gap: 2px;
+}
+.mt-prepare-list dt {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.mt-prepare-list dd {
+  margin: 0;
+  color: var(--color-text-main);
 }
 .mt-progress {
   width: 140px;
@@ -339,8 +418,9 @@
 }
 .mt-mentor-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 6px 10px;
   padding: 10px 0;
   border-bottom: 1px solid var(--color-border);
   font-size: 14px;
@@ -349,7 +429,8 @@
   border-bottom: 0;
 }
 .mt-mentor-name {
-  flex: 1;
+  /* The name and its details take the whole first line; the state and buttons follow. */
+  flex: 1 1 100%;
   min-width: 0;
   font-weight: 600;
   text-transform: capitalize;

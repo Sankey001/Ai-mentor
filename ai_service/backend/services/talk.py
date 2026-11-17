@@ -28,7 +28,7 @@ from typing import AsyncIterator, Iterator
 import backend.voices as voices
 from backend import config
 from backend.config import AI_PROVIDER, LLM_TIMEOUT_SECONDS, OLLAMA_MODEL
-from backend.services import media_workers, mentor_pack, model_choices
+from backend.services import lesson_parts, media_workers, mentor_pack, model_choices
 from backend.services.media_processor import BASE_DIR, generate_tts, get_mentor_clips
 from backend.services.providers.base import (
     UNTRUSTED_INPUT_INSTRUCTION,
@@ -82,14 +82,19 @@ def split_sentences(text: str, max_chars: int = MAX_SPOKEN_CHARS) -> list[str]:
     """Split text into sentences, cutting any sentence longer than ``max_chars``.
 
     A long sentence is cut after a comma (or another clause mark) when it has one
-    that is not too early, otherwise between two words.
+    that is not too early, otherwise between two words. A sentence only a little
+    too long is kept whole, so no piece is left of just a word or two.
     """
     pieces = []
     for sentence in SENTENCE_END.split(" ".join(text.split())):
         words = sentence.split()
+        if len(sentence) <= max_chars * 13 // 10:
+            max_room = len(sentence)
+        else:
+            max_room = max_chars
         while words:
             piece, clause = words.pop(0), None
-            while words and len(piece) + 1 + len(words[0]) <= max_chars:
+            while words and len(piece) + 1 + len(words[0]) <= max_room:
                 piece += " " + words.pop(0)
                 if piece[-1] in CLAUSE_END and words and len(piece) >= max_chars // 3:
                     clause = (piece, list(words))
@@ -132,6 +137,7 @@ def reply_pieces(
     think: bool = False,
     script: str | None = None,
     prepared: bool = False,
+    openers: list[str] | None = None,
 ) -> Iterator[tuple[str, str]]:
     """Yield (provider, text) pieces of the mentor's reply as it is written.
 
@@ -140,7 +146,8 @@ def reply_pieces(
     pick is never sent to an online API, so the conversation stays on this
     computer. ``think`` lets a local thinking model reason first. ``script`` is
     the prepared lesson the learner is hearing. ``prepared`` asks for the longer
-    lesson that is written ahead of time. A local model streams its reply;
+    lesson that is written ahead of time. ``openers`` are phrases already recorded
+    in the mentor's voice that a reply may begin with. A local model streams its reply;
     an online API gives it in one piece. When every attempt fails, a fixed
     apology is given.
     """
@@ -152,7 +159,7 @@ def reply_pieces(
             "spoken sentences: say what it is and why it matters, explain how it works "
             "one step at a time, give one everyday example, warn about one common "
             "mistake, and end with a one-sentence recap."
-        )
+        ) + lesson_parts.LABEL_INSTRUCTION
     elif lesson and not message:
         task = (
             "Teach the lesson named in the JSON to the learner in five to seven short "
@@ -162,6 +169,11 @@ def reply_pieces(
         task = (
             "Reply to the learner's message in one to three short spoken sentences. "
             "When the JSON names a lesson, the learner is studying it; answer in that context."
+        )
+    if openers and message:
+        task += (
+            " When one fits naturally, begin with one of these phrases, word for word: "
+            + " / ".join(openers)
         )
     system_instruction = f"""
     {UNTRUSTED_INPUT_INSTRUCTION}
@@ -226,7 +238,9 @@ def reply_pieces(
     elif choice[0] == "ollama":
         # Thinking can use up its budget before answering; then the same local
         # model answers without it, still on this computer.
-        attempts = [ollama(choice[1], True), ollama(choice[1])] if think else [ollama(choice[1])]
+        # Loading a local model next to busy voice and face workers can fail once;
+        # a second try usually works.
+        attempts = [ollama(choice[1], True), ollama(choice[1])] if think else [ollama(choice[1])] * 2
     elif choice[0] == "groq":
         attempts = [groq, gemini]
     else:
@@ -347,6 +361,7 @@ async def talk(
     choice: tuple[str, str] | None = None,
     think: bool = False,
     script: str | None = None,
+    cache=None,
 ) -> AsyncIterator[dict]:
     """Yield the events of one turn.
 
@@ -355,7 +370,9 @@ async def talk(
     chunk can arrive before "reply".
 
     ``choice`` and ``think`` are the learner's picks and ``script`` the prepared
-    lesson being taught; see ``reply_pieces``.
+    lesson being taught; see ``reply_pieces``. ``cache`` is the mentor's voice
+    bank (``voice_bank.LiveCache``): a sentence it holds plays at once without
+    the GPU, and a sentence made now is kept in it for next time.
     """
     global live_waiting
     _clean_old_sessions()
@@ -365,6 +382,7 @@ async def talk(
     teaching = bool(lesson) and not message
     max_sentences = MAX_LESSON_SENTENCES if teaching else MAX_REPLY_SENTENCES
     media = MentorMedia(mentor)
+    openers = cache.openers() if cache and message else None
     workers_on = bool(config.VOICE_WORKER_URL or config.FACE_WORKER_URL)
     local_model = None
     if choice and choice[0] == "ollama":
@@ -405,8 +423,11 @@ async def talk(
                 send(written, sentence)
             return len(sentences) >= max_sentences
 
-        pieces = reply_pieces(mentor, message, history, lesson, choice, think, script)
+        pieces = None
         try:
+            pieces = reply_pieces(
+                mentor, message, history, lesson, choice, think, script, openers=openers
+            )
             for provider, piece in pieces:
                 if stopped.is_set() or emit(cutter.feed(piece)):
                     break
@@ -433,18 +454,27 @@ async def talk(
                 chunk.update(kind="video", face="lipsync", url=_url(video))
             else:
                 chunk.update(kind="audio", face="idle", url=_url(audio))
+                video = None
+            if cache:
+                await asyncio.to_thread(cache.keep, sentence, audio, video, voice)
         return chunk
 
     async def voice_all() -> None:
         try:
-            await gpu_free.wait()
             index = 0
             while (sentence := await written.get()) is not None:
-                audio, kind = await media.voice(sentence, os.path.join(session_dir, str(index)))
-                if take_turns:  # finish this sentence before voicing the next
-                    await events.put(await add_face(index, sentence, audio, kind))
+                ready = cache.lookup(sentence) if cache else None
+                if ready:  # already in the voice bank: plays at once, no GPU
+                    chunk = {"type": "chunk", "index": index, "text": sentence, **ready}
+                    await (events if take_turns else voiced).put(chunk)
                 else:
-                    await voiced.put((index, sentence, audio, kind))
+                    await gpu_free.wait()
+                    path = os.path.join(session_dir, str(index))
+                    audio, kind = await media.voice(sentence, path)
+                    if take_turns:  # finish this sentence before voicing the next
+                        await events.put(await add_face(index, sentence, audio, kind))
+                    else:
+                        await voiced.put((index, sentence, audio, kind))
                 index += 1
         finally:
             await voiced.put(None)
@@ -452,7 +482,7 @@ async def talk(
     async def face_all() -> None:
         try:
             while (item := await voiced.get()) is not None:
-                await events.put(await add_face(*item))
+                await events.put(item if isinstance(item, dict) else await add_face(*item))
         finally:
             await events.put({"type": "done"})
 

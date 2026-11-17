@@ -23,6 +23,12 @@ const service = vi.hoisted(() => ({
   packStatus: vi.fn(),
   getPack: vi.fn(),
   stopPreparing: vi.fn(),
+  voiceBankStatus: vi.fn(),
+  recordVoiceBank: vi.fn(),
+  stopVoiceBank: vi.fn(),
+  exportKit: vi.fn(),
+  kitsFolder: vi.fn(),
+  importKits: vi.fn(),
   createMentor: vi.fn(),
   deleteMentor: vi.fn(),
   updateMentor: vi.fn(),
@@ -107,6 +113,18 @@ const packsStatus = (states = ["missing", "missing", "missing"], extra = {}) => 
   bytes: 0,
   ...extra,
 });
+const bankStatus = (extra = {}) => ({
+  ready: 120,
+  total: 512,
+  kept: 7,
+  building: false,
+  waiting_for_lessons: false,
+  doing: "",
+  seconds_left: 0,
+  error: "",
+  bytes: 35_000_000,
+  ...extra,
+});
 const sentence = (text, n) => ({
   text,
   kind: "video",
@@ -177,6 +195,12 @@ beforeEach(() => {
   service.preparePacks.mockResolvedValue(packsStatus());
   service.getPack.mockResolvedValue({ state: "missing" });
   service.stopPreparing.mockResolvedValue();
+  service.voiceBankStatus.mockResolvedValue(bankStatus());
+  service.recordVoiceBank.mockResolvedValue(bankStatus({ building: true }));
+  service.stopVoiceBank.mockResolvedValue();
+  service.exportKit.mockResolvedValue({ path: "E:\\kits\\asha.zip", bytes: 52_000_000 });
+  service.kitsFolder.mockResolvedValue({ folder: "E:\\kits" });
+  service.importKits.mockResolvedValue({ folder: "E:\\kits", imported: [], failed: [] });
   service.createMentor.mockResolvedValue({ name: "asha", state: "preparing" });
   service.deleteMentor.mockResolvedValue();
   service.updateMentor.mockResolvedValue({ name: "asha", state: "ready" });
@@ -399,14 +423,13 @@ describe("MentorClassroom", () => {
     renderAt("/mentor/1");
     await waitFor(() => expect(screen.getByLabelText("Mentor").value).toBe("asha"));
 
-    // The open lesson first, then up to five that follow it (this course has two more).
+    // The open lesson is already prepared, so only the ones after it are asked for.
     await waitFor(() =>
-      expect(service.preparePacks.mock.calls.slice(0, 2)).toEqual([
-        ["asha", reactLessons.slice(0, 1), { urgent: true }],
-        ["asha", reactLessons.slice(1, 3)],
-      ]),
+      expect(service.preparePacks.mock.calls[0]).toEqual(["asha", reactLessons.slice(1, 3)]),
     );
-    expect(await screen.findByText(/1 of 3 lessons prepared/)).toBeTruthy();
+    const panel = await screen.findByRole("status", { name: "Prepared lessons" });
+    await waitFor(() => expect(panel.textContent).toMatch(/Prepared1 of 3 lessons/));
+    expect(panel.textContent).toMatch(/Next 20 of 2 ready/);
     expect(screen.getByRole("button", { name: /Teach this lesson/ }).textContent).toMatch(
       /Ready to play/,
     );
@@ -423,12 +446,104 @@ describe("MentorClassroom", () => {
     await waitFor(() =>
       expect(service.preparePacks).toHaveBeenLastCalledWith("asha", reactLessons),
     );
-    expect(await screen.findByText(/2 to go, about 4 minutes left/)).toBeTruthy();
-    expect(screen.getByText(/7 MB on disk/)).toBeTruthy();
+    expect(await screen.findByText("2 lessons, about 4 minutes left")).toBeTruthy();
+    expect(screen.getByText("7 MB")).toBeTruthy();
     expect(screen.getByText("Writing “History of React”")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /Stop preparing/ }));
     await waitFor(() => expect(service.stopPreparing).toHaveBeenCalledWith("asha"));
+  });
+
+  it("keeps the next 20 lessons prepared, five at a time, nearest first", async () => {
+    const longCourse = {
+      title: "Long Course",
+      source: "sample",
+      modules: [
+        {
+          id: "m",
+          title: "Module",
+          lessons: Array.from({ length: 30 }, (_, n) => ({ id: `l${n}`, title: `Lesson ${n}` })),
+        },
+      ],
+    };
+    service.loadCourseContent.mockResolvedValue(longCourse);
+    // A stand-in service: whatever is asked for is ready by the next status check.
+    const ready = new Set();
+    service.preparePacks.mockImplementation(async (_mentor, lessons) => {
+      lessons.forEach((lesson) => ready.add(lesson.title));
+      return packsStatus([]);
+    });
+    service.packStatus.mockImplementation(async (_mentor, lessons) =>
+      packsStatus(lessons.map((lesson) => (ready.has(lesson.title) ? "ready" : "missing"))),
+    );
+    renderAt("/mentor/1");
+
+    const panel = await screen.findByRole("status", { name: "Prepared lessons" });
+    await waitFor(() => expect(panel.textContent).toMatch(/Next 2020 of 20 ready/));
+    const asked = service.preparePacks.mock.calls.map(([, lessons, options]) => [
+      lessons.map((lesson) => Number(lesson.title.split(" ")[1])),
+      options?.urgent || false,
+    ]);
+    const range = (from, to) => Array.from({ length: to - from + 1 }, (_, n) => from + n);
+    expect(asked).toEqual([
+      [[0], true],
+      [range(1, 5), false],
+      [range(6, 10), false],
+      [range(11, 15), false],
+      [range(16, 20), false],
+    ]);
+    expect(panel.textContent).toMatch(/Prepared21 of 30 lessons/);
+
+    // Moving on to the next lesson keeps 20 ahead ready: only lesson 21 is new.
+    fireEvent.click(screen.getByRole("button", { name: "Next lesson" }));
+    await waitFor(() =>
+      expect(service.preparePacks).toHaveBeenLastCalledWith("asha", [
+        expect.objectContaining({ title: "Lesson 21" }),
+      ]),
+    );
+  });
+
+  it("shows a prepared lesson as notes and marks the sentence being spoken", async () => {
+    const part = (text, n, name) => ({ ...sentence(text, n), part: name });
+    service.getPack.mockResolvedValue({
+      state: "ready",
+      sentences: [
+        part("React is a toolkit for building screens.", 0, "what"),
+        part("Think of it like building with blocks,", 1, "example"),
+        part("one piece at a time.", 2, "example"),
+        part("Don't put everything in one file.", 3, "mistake"),
+        part("Remember, small parts are easy to reuse.", 4, "recap"),
+      ],
+    });
+    renderAt("/mentor/1");
+    await waitFor(() => expect(screen.getByLabelText("Mentor").value).toBe("asha"));
+
+    fireEvent.click(screen.getByRole("button", { name: /Teach this lesson/ }));
+
+    const notes = await screen.findByRole("article", { name: "Lesson: What is React?" });
+    const headings = [...notes.querySelectorAll("h4")].map((heading) => heading.textContent);
+    expect(headings).toEqual(["What it is", "Example", "Common mistake", "Remember"]);
+    // A sentence spoken in two pieces reads as one.
+    expect(notes.textContent).toMatch(/building with blocks, one piece at a time\./);
+    const glance = [...notes.querySelectorAll("table tr")].map((row) => [
+      row.querySelector("th").textContent,
+      row.querySelector("td").textContent,
+    ]);
+    expect(glance).toEqual([
+      ["What it is", "React is a toolkit for building screens."],
+      ["Example", "Think of it like building with blocks, one piece at a time."],
+      ["Common mistake", "Don't put everything in one file."],
+      ["Remember", "Remember, small parts are easy to reuse."],
+    ]);
+
+    // The sentence being spoken is marked, and the mark moves on with the lesson.
+    await waitFor(() =>
+      expect(notes.querySelector("mark").textContent).toBe(
+        "React is a toolkit for building screens.",
+      ),
+    );
+    fireEvent.ended(talkingVideo());
+    await waitFor(() => expect(notes.querySelector("mark").textContent).toMatch(/blocks,/));
   });
 
   it("plays a prepared lesson at once, pauses it for a question, then goes on", async () => {
@@ -439,9 +554,10 @@ describe("MentorClassroom", () => {
     fireEvent.click(screen.getByRole("button", { name: /Teach this lesson/ }));
 
     // The lesson plays from its files: the AI is not asked for anything.
-    expect(
-      await screen.findByText("React is a toolkit. It builds screens. That is React."),
-    ).toBeTruthy();
+    const notes = await screen.findByRole("article", { name: "Lesson: What is React?" });
+    expect(notes.querySelector("p").textContent).toBe(
+      "React is a toolkit. It builds screens. That is React.",
+    );
     expect(screen.getByText("Prepared lesson · Voice: cloned · Face: lipsync")).toBeTruthy();
     expect(service.getPack).toHaveBeenCalledWith("asha", reactLessons[0]);
     expect(service.streamTalk).not.toHaveBeenCalled();
@@ -540,6 +656,48 @@ describe("MentorSettings", () => {
 
     expect((await screen.findByRole("alert")).textContent).toMatch(/OLLAMA_URL must look like/);
     expect(service.saveSettings).toHaveBeenCalledWith({ GEMINI_API_KEY: "" });
+  });
+});
+
+describe("MentorStudio voice bank and kits", () => {
+  it("shows each ready mentor's voice bank and starts or stops recording it", async () => {
+    renderAt("/mentor-studio");
+
+    expect(
+      await screen.findAllByText(
+        "Voice bank: 120 of 512 phrases recorded · 7 kept from answers · 35 MB",
+      ),
+    ).toHaveLength(2); // asha and owl are ready; bo is still being prepared
+    expect(service.voiceBankStatus).not.toHaveBeenCalledWith("bo");
+
+    service.voiceBankStatus.mockResolvedValue(bankStatus({ building: true, seconds_left: 600 }));
+    fireEvent.click(screen.getByRole("button", { name: "Record asha's phrases" }));
+    await waitFor(() => expect(service.recordVoiceBank).toHaveBeenCalledWith("asha"));
+    expect((await screen.findAllByText(/about 10 minutes left/)).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop recording asha's phrases" }));
+    await waitFor(() => expect(service.stopVoiceBank).toHaveBeenCalledWith("asha"));
+  });
+
+  it("saves a mentor as a kit and imports the kits in the folder", async () => {
+    service.importKits.mockResolvedValue({
+      folder: "E:\\kits",
+      imported: [{ name: "neo", new_mentor: true, files_added: 900 }],
+      failed: [{ file: "old.zip", error: "This kit was made by a different version of the app." }],
+    });
+    renderAt("/mentor-studio");
+    expect(await screen.findByText("E:\\kits")).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Save asha as a kit" }));
+    expect(await screen.findByText("Saved asha (52 MB) to E:\\kits\\asha.zip")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Import kits/ }));
+    expect(
+      await screen.findByText(
+        "Added neo. old.zip: This kit was made by a different version of the app.",
+      ),
+    ).toBeTruthy();
+    await waitFor(() => expect(service.listMentors.mock.calls.length).toBeGreaterThan(1));
   });
 });
 

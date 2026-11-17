@@ -439,6 +439,11 @@ async def prepare_mentor(name: str) -> None:
             if not await media_workers.prepare(clips):
                 log_event("WARN", "Face worker could not prepare the mentor; it will talk over its clip")
         _states[name] = {"state": "ready", "detail": ""}
+        # The mentor's common phrases are recorded next, in the background.
+        from backend.services import voice_bank  # imported here: it imports the talk service
+
+        voice_bank.forget(name)  # a new face or voice: old recordings no longer match
+        voice_bank.build(name)
     except Exception as error:
         log_event("ERROR", "Mentor preparation failed", error=short_error(error))
         _states[name] = {"state": "failed", "detail": "Preparation stopped unexpectedly."}

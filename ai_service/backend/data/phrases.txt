@@ -1,0 +1,345 @@
+# Phrases every mentor records once, when it is set up (its "voice bank").
+#
+# A line under "## <group>" is one phrase, spoken exactly as written. Lines under
+# "## terms" are technical words: each one is spoken inside two short sentences
+# (see TERM_SENTENCES in voice_bank.py). Groups are recorded in this order.
+# "openers" are offered to the AI as ways to begin an answer, so the first
+# sentence of an answer is often ready at once.
+
+## openers
+Great question.
+Good question.
+That's a great question.
+That's a really good question.
+Let's look at that.
+Let's break it down.
+Let's take it step by step.
+Let me explain.
+Let me put it simply.
+Here's the idea.
+Here's the short answer.
+Here's how I think about it.
+Think of it this way.
+Good thinking.
+Nice catch.
+You're on the right track.
+Exactly.
+Yes, exactly.
+Not quite.
+Almost.
+That's close.
+Sure.
+Of course.
+Absolutely.
+Right.
+Okay.
+Okay, let's see.
+Alright, let's dig in.
+Fair point.
+Interesting question.
+I'm glad you asked.
+That's a common question.
+That's a common mix-up.
+Many people wonder about that.
+It depends.
+In short, yes.
+In short, no.
+Yes, you can.
+No, not quite.
+Let's start with the basics.
+
+## transitions
+First, let's look at the idea.
+Now, here's the important part.
+Here's an example.
+For example, think about a shopping list.
+Imagine you're cooking a meal.
+Picture a set of labeled boxes.
+In other words, it saves you work.
+On the other hand, there's a trade-off.
+That's why it matters.
+That's the key idea.
+This is where it gets interesting.
+Here's the trick.
+The main point is simple.
+The good news is that it's easy to try.
+Once you see it, it clicks.
+Let's look at the code.
+Let's try a small example.
+Let's go one step further.
+Let's compare the two.
+Let's see why.
+Notice what happens here.
+Pay attention to this part.
+Keep that in mind.
+Remember this rule.
+Next, we'll put it together.
+After that, it gets easier.
+Finally, let's sum it up.
+Under the hood, the computer does the work.
+In practice, you'll use this a lot.
+Most of the time, that's all you need.
+In real projects, this shows up everywhere.
+The idea is the same.
+It works the same way.
+It's simpler than it sounds.
+It sounds harder than it is.
+That's the whole idea.
+That's really all there is to it.
+Let me show you why.
+Here's a quick way to remember it.
+A simple way to say it is this.
+
+## checks
+Does that make sense?
+Does that help?
+Is that clearer now?
+Want me to show an example?
+Want to try one together?
+Shall we try a quick example?
+Should I explain it another way?
+Would you like a quick quiz?
+Can you guess what happens next?
+What do you think happens here?
+Try it yourself.
+Give it a try.
+Take a moment to think about it.
+Ask me if anything is unclear.
+Let me know if you want more detail.
+Any questions so far?
+Ready for the next part?
+Shall we move on?
+Let's check your understanding.
+Here's a quick question for you.
+
+## encouragement
+Well done.
+Nice work.
+Great job.
+Good job.
+You've got it.
+You're getting the hang of it.
+That's exactly right.
+You're doing great.
+Don't worry, everyone finds this tricky at first.
+Mistakes are how we learn.
+Practice makes it easy.
+Keep going.
+You're making good progress.
+That's a smart way to think about it.
+You've already learned the hard part.
+It's okay to take it slowly.
+Small steps add up.
+You'll remember it after a few tries.
+I like how you're thinking.
+That's the right instinct.
+
+## closers
+To sum up, it's a way to organize your work.
+So that's the main idea.
+That's it for this part.
+That's the basics.
+And that's how it works.
+So, in short, keep it simple.
+Let's recap.
+Quick recap.
+Remember the key idea.
+Try it out on your own.
+See you in the next lesson.
+Let's keep going.
+Let's move on.
+On to the next part.
+We'll build on this next.
+Next time, we'll go deeper.
+Good luck, and have fun with it.
+Happy coding.
+Thanks for the great question.
+I hope that helps.
+
+## terms
+a variable
+a constant
+a function
+an argument
+a parameter
+a return value
+a loop
+a for loop
+a while loop
+a condition
+an if statement
+a boolean
+a string
+a number
+an integer
+a float
+an array
+a list
+a tuple
+a dictionary
+an object
+a class
+an instance
+a method
+a property
+inheritance
+an interface
+a module
+a package
+a library
+a framework
+an import
+an exception
+an error message
+a bug
+debugging
+a breakpoint
+a stack trace
+recursion
+an algorithm
+a data structure
+a stack
+a queue
+a linked list
+a tree
+a graph
+a hash map
+a set
+sorting
+searching
+binary search
+big O notation
+time complexity
+memory
+a pointer
+a reference
+scope
+a closure
+a callback
+a promise
+async and await
+an event
+an event loop
+a thread
+concurrency
+an API
+a REST API
+an endpoint
+a request
+a response
+a status code
+JSON
+HTTP
+HTTPS
+a URL
+a server
+a client
+a database
+SQL
+a table
+a row
+a column
+a primary key
+a query
+an index
+a migration
+authentication
+authorization
+a token
+a password hash
+encryption
+a cookie
+a session
+HTML
+CSS
+JavaScript
+TypeScript
+Python
+Java
+React
+a component
+props
+state
+a hook
+useState
+useEffect
+JSX
+the DOM
+a virtual DOM
+rendering
+a route
+a form
+an input
+a button
+a layout
+Flexbox
+CSS Grid
+a media query
+responsive design
+accessibility
+Node.js
+npm
+Express
+a dependency
+a build tool
+a bundler
+Git
+a commit
+a branch
+a merge
+a pull request
+GitHub
+a repository
+version control
+a terminal
+the command line
+a script
+an environment variable
+a config file
+testing
+a unit test
+an integration test
+a test case
+an assertion
+refactoring
+clean code
+documentation
+a comment
+a code review
+deployment
+the cloud
+a container
+Docker
+a virtual machine
+Linux
+an operating system
+a file
+a folder
+a path
+input and output
+a compiler
+an interpreter
+syntax
+a keyword
+an operator
+an expression
+a statement
+a type
+type checking
+null
+undefined
+an edge case
+performance
+caching
+a cache
+machine learning
+a model
+training data
+a neural network
+artificial intelligence
+a prompt
+an LLM
+a vector
+a matrix
+statistics
+a chart

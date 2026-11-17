@@ -69,6 +69,27 @@ export const stopPreparing = async (mentor) => {
   if (!response.ok) throw await explain(response);
 };
 
+// A mentor's voice bank: phrases recorded once in its voice, and sentences kept
+// from its answers, which then play at once.
+// { ready, total, kept, building, waiting_for_lessons, doing, seconds_left, error, bytes }
+const mentorPath = (mentor) => `/mentors/${encodeURIComponent(mentor)}`;
+export const voiceBankStatus = (mentor, signal) =>
+  getJson(`${mentorPath(mentor)}/voice-bank`, signal);
+export const recordVoiceBank = (mentor) => postJson(`${mentorPath(mentor)}/voice-bank`, {});
+export const stopVoiceBank = async (mentor) => {
+  const response = await fetch(`${AI_SERVICE_URL}${mentorPath(mentor)}/voice-bank/recording`, {
+    method: "DELETE",
+  });
+  if (!response.ok) throw await explain(response);
+};
+
+// Mentor kits: one .zip with a mentor and its voice bank, written to and read from
+// the mentor_kits folder on the computer running the service.
+export const exportKit = (mentor) => postJson(`${mentorPath(mentor)}/kit`, {}); // { path, bytes }
+export const kitsFolder = (signal) => getJson("/mentor-kits", signal); // { folder }
+// { folder, imported: [{ name, new_mentor, files_added }], failed: [{ file, error }] }
+export const importKits = () => postJson("/mentor-kits/import", {});
+
 export const formatTimeLeft = (seconds) =>
   seconds < 90 ? "about a minute" : `about ${Math.round(seconds / 60)} minutes`;
 export const formatSize = (bytes) =>

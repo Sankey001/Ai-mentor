@@ -13,6 +13,10 @@ it was made from, so a change re-makes only what it touches:
 A new personality rewrites scripts; sentences that come out the same keep their
 audio. A new voice re-voices everything; new photos only re-make the clips.
 Finished files are never made again, so preparation can stop and resume.
+
+The voice and the clips are identified by their content, not by file dates, so
+the folder still matches after it is copied to another computer (see
+``mentor_kits``). The same media folder also holds the mentor's voice bank.
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ import shutil
 import time
 
 from backend import config
-from backend.services import media_processor, mentor_pack, model_choices, talk
+from backend.services import lesson_parts, media_processor, mentor_pack, model_choices, talk
 from backend.services.providers.ollama_provider import load_ollama_model, release_ollama_model
 from backend.utils.logging_utils import log_event, short_error
 
@@ -45,18 +49,41 @@ TYPICAL_SENTENCES = 10
 # out of the GPU for every lesson.
 LESSONS_PER_ROUND = 6
 MODEL_CHECK_SECONDS = 30
+FORMAT = {"version": 2}  # 2: voice and clips identified by content
+FORMAT_FILE = "format.json"
 
 _queue: list[dict] = []  # lessons waiting, in order: {"mentor", "lesson", "urgent"}
 _failed: dict[tuple[str, str], str] = {}  # (mentor, lesson id) -> why it could not be made
 _job = {"task": None, "doing": "", "script_seconds": [], "sentence_seconds": [], "mentors": set()}
 _model = {"checked": float("-inf"), "value": (None, "online")}
+_fingerprints: dict[str, tuple[int, int, str]] = {}  # path -> (size, mtime, content hash)
+_migrated: set[str] = set()
 
 
 def _key(*parts) -> str:
     return hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()[:16]
 
 
+def _fingerprint(path: str) -> str:
+    """A hash of the file's content, worked out again only when the file changes."""
+    stat = os.stat(path)
+    cached = _fingerprints.get(path)
+    if cached and cached[:2] == (stat.st_size, stat.st_mtime_ns):
+        return cached[2]
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for block in iter(lambda: source.read(1 << 20), b""):
+            digest.update(block)
+    _fingerprints[path] = (stat.st_size, stat.st_mtime_ns, digest.hexdigest()[:16])
+    return _fingerprints[path][2]
+
+
 def _stamp(path: str) -> list:
+    return [os.path.basename(path), _fingerprint(path)]
+
+
+def _old_stamp(path: str) -> list:
+    """How format 1 identified a file: by its size and date."""
     stat = os.stat(path)
     return [os.path.basename(path), stat.st_size, stat.st_mtime_ns]
 
@@ -98,20 +125,38 @@ def _script_path(mentor: str, lesson: dict, persona: str, model_label: str) -> s
     return os.path.join(mentor_dir(mentor), "scripts", f"{name}.json")
 
 
-def _read_sentences(path: str) -> list[str] | None:
-    """The sentences of a saved script, or None when there is no usable one."""
+def _read_script(path: str) -> dict | None:
+    """A saved script's sentences and their parts, or None when there is no usable one."""
     try:
         with open(path, encoding="utf-8") as script_file:
-            sentences = json.load(script_file)["sentences"]
+            script = json.load(script_file)
+        sentences = script["sentences"]
     except (OSError, ValueError, KeyError, TypeError):
         return None
-    if isinstance(sentences, list) and all(isinstance(s, str) and s for s in sentences):
-        return sentences
-    return None
+    if not isinstance(sentences, list) or not all(isinstance(s, str) and s for s in sentences):
+        return None
+    parts = script.get("parts")
+    if not (isinstance(parts, list) and len(parts) == len(sentences)
+            and all(part in lesson_parts.PARTS for part in parts)):
+        parts = lesson_parts.guess_parts(sentences)  # written before parts were saved
+    return {"sentences": sentences, "parts": parts}
+
+
+def _read_sentences(path: str) -> list[str] | None:
+    """The sentences of a saved script, or None when there is no usable one."""
+    script = _read_script(path)
+    return script["sentences"] if script else None
+
+
+def _voice_of(media: talk.MentorMedia, stamp=_stamp) -> list:
+    if media.voice_sample:
+        return ["cloned", stamp(media.voice_sample), media.expressiveness]
+    return ["stock", media.stock_voice, media.rate, media.pitch]
 
 
 class MentorSetup:
-    """What a mentor's packs are made from: voice, clips, personality, writing model."""
+    """What a mentor's spoken media is made from (voice, clips, personality, writing
+    model), and where each sentence's audio and clip are kept."""
 
     def __init__(self, mentor: str) -> None:
         self.mentor = mentor
@@ -119,32 +164,11 @@ class MentorSetup:
         self.persona = mentor_pack.get_mentor_profile(mentor)["persona"]
         self.model_label = script_model()[1]
         self.folder = mentor_dir(mentor)
-        if self.media.voice_sample:
-            self.voice = ["cloned", _stamp(self.media.voice_sample), self.media.expressiveness]
-        else:
-            self.voice = ["stock", self.media.stock_voice, self.media.rate, self.media.pitch]
+        self.voice = _voice_of(self.media)
         self.clips = [_stamp(clip) for clip in self.media.clips]
         # Without a face worker a pack is audio only; with one, it needs its clips.
         self.wants_video = bool(config.FACE_WORKER_URL and self.media.clips)
-
-
-class Pack:
-    """Where one mentor's version of one lesson is stored, and how far it is."""
-
-    def __init__(self, mentor: str | MentorSetup, lesson: dict) -> None:
-        setup = mentor if isinstance(mentor, MentorSetup) else MentorSetup(mentor)
-        self.mentor, self.media, self.folder = setup.mentor, setup.media, setup.folder
-        self.voice, self.clips, self.wants_video = setup.voice, setup.clips, setup.wants_video
-        self.model_label = setup.model_label
-        self.lesson = _clean_lesson(lesson)
-        self.id = lesson_id(lesson)
-        self.script_path = _script_path(
-            self.mentor, self.lesson, setup.persona, self.model_label
-        )
-
-    def sentences(self) -> list[str] | None:
-        """The script's sentences, or None when it is not written yet."""
-        return _read_sentences(self.script_path)
+        _migrate(self)
 
     def audio_path(self, sentence: str) -> str:
         """Where the sentence's audio goes, without its extension (.wav or .mp3)."""
@@ -162,6 +186,68 @@ class Pack:
         if not self.audio_file(sentence):
             return False
         return not self.wants_video or os.path.isfile(self.video_file(sentence))
+
+    def chunk(self, sentence: str) -> dict:
+        """How the classroom plays a ready sentence (its text is added by the caller)."""
+        if self.wants_video:
+            path, extra = self.video_file(sentence), {"kind": "video", "face": "lipsync"}
+        else:
+            path, extra = self.audio_file(sentence), {"kind": "audio", "face": "idle"}
+        url = f"{MEDIA_URL}/{self.mentor}/{os.path.basename(path)}"
+        return {**extra, "voice": self.voice[0], "url": url}
+
+
+def _rename(folder: str, old: str, new: str) -> None:
+    for ext in (".wav", ".mp3", ".mp4"):
+        source, target = os.path.join(folder, old + ext), os.path.join(folder, new + ext)
+        if os.path.isfile(source) and not os.path.exists(target):
+            os.replace(source, target)
+
+
+def _migrate(setup: MentorSetup) -> None:
+    """Rename media made under format 1 (files named after dates) to format 2, once."""
+    if setup.mentor in _migrated:
+        return
+    marker = os.path.join(setup.folder, FORMAT_FILE)
+    if os.path.isdir(setup.folder) and not os.path.isfile(marker):
+        old_voice = _voice_of(setup.media, _old_stamp)
+        old_clips = [_old_stamp(clip) for clip in setup.media.clips]
+        media = os.path.join(setup.folder, "media")
+        texts = set()
+        scripts = os.path.join(setup.folder, "scripts")
+        for name in os.listdir(scripts) if os.path.isdir(scripts) else []:
+            texts.update(_read_sentences(os.path.join(scripts, name)) or [])
+        for text in texts:
+            old_audio, new_audio = _key(text, old_voice), _key(text, setup.voice)
+            _rename(media, _key(old_audio, old_clips), _key(new_audio, setup.clips))
+            _rename(media, old_audio, new_audio)
+    if os.path.isdir(setup.folder):  # an empty mentor is checked again once it has files
+        with open(marker, "w", encoding="utf-8") as marker_file:
+            json.dump(FORMAT, marker_file)
+        _migrated.add(setup.mentor)
+
+
+class Pack:
+    """Where one mentor's version of one lesson is stored, and how far it is."""
+
+    def __init__(self, mentor: str | MentorSetup, lesson: dict) -> None:
+        setup = mentor if isinstance(mentor, MentorSetup) else MentorSetup(mentor)
+        self.setup = setup
+        self.mentor, self.media, self.folder = setup.mentor, setup.media, setup.folder
+        self.voice, self.clips, self.wants_video = setup.voice, setup.clips, setup.wants_video
+        self.model_label = setup.model_label
+        self.lesson = _clean_lesson(lesson)
+        self.id = lesson_id(lesson)
+        self.script_path = _script_path(
+            self.mentor, self.lesson, setup.persona, self.model_label
+        )
+
+    def sentences(self) -> list[str] | None:
+        """The script's sentences, or None when it is not written yet."""
+        return _read_sentences(self.script_path)
+
+    def sentence_ready(self, sentence: str) -> bool:
+        return self.setup.sentence_ready(sentence)
 
     def progress(self) -> tuple[int, int | None]:
         """Return (sentences ready, sentences in the script or None without a script)."""
@@ -186,18 +272,11 @@ class Pack:
         result = {"id": self.id, "state": state, "model": self.model_label}
         if state != "ready":
             return result
-        voice = self.voice[0]
-        result["sentences"] = []
-        for sentence in sentences:
-            item = {"text": sentence, "voice": voice}
-            if self.wants_video:
-                path = self.video_file(sentence)
-                item.update(kind="video", face="lipsync")
-            else:
-                path = self.audio_file(sentence)
-                item.update(kind="audio", face="idle")
-            item["url"] = f"{MEDIA_URL}/{self.mentor}/{os.path.basename(path)}"
-            result["sentences"].append(item)
+        parts = (_read_script(self.script_path) or {}).get("parts") or []
+        result["sentences"] = [
+            {"text": sentence, "part": part, **self.setup.chunk(sentence)}
+            for sentence, part in zip(sentences, parts)
+        ]
         return result
 
 
@@ -246,14 +325,21 @@ def write_script(pack: Pack, choice: tuple[str, str] | None) -> bool | None:
             reply += piece
     finally:
         pieces.close()  # stops a local model that was cut short
-    sentences = talk.split_sentences(reply)[:MAX_SCRIPT_SENTENCES]
+    sentences, parts = lesson_parts.parse_labeled(reply, talk.split_sentences)
+    sentences = sentences[:MAX_SCRIPT_SENTENCES]
+    parts = (parts or lesson_parts.guess_parts(sentences))[: len(sentences)]
     if provider == "fallback" or len(sentences) < MIN_SCRIPT_SENTENCES:
         return False
     os.makedirs(os.path.dirname(pack.script_path), exist_ok=True)
     temp = pack.script_path + ".tmp"
     with open(temp, "w", encoding="utf-8") as script_file:
         json.dump(
-            {"lesson": pack.lesson, "model": pack.model_label, "sentences": sentences},
+            {
+                "lesson": pack.lesson,
+                "model": pack.model_label,
+                "sentences": sentences,
+                "parts": parts,
+            },
             script_file,
             ensure_ascii=False,
             indent=1,
@@ -262,23 +348,24 @@ def write_script(pack: Pack, choice: tuple[str, str] | None) -> bool | None:
     return True
 
 
-async def render_sentence(pack: Pack, sentence: str) -> bool:
+async def render_sentence(target: Pack | MentorSetup, sentence: str) -> bool:
     """Make the sentence's audio and clip unless they exist; False if a worker failed."""
-    os.makedirs(os.path.join(pack.folder, "media"), exist_ok=True)
-    audio = pack.audio_file(sentence)
+    setup = target.setup if isinstance(target, Pack) else target
+    os.makedirs(os.path.join(setup.folder, "media"), exist_ok=True)
+    audio = setup.audio_file(sentence)
     if not audio:
-        base = pack.audio_path(sentence)
-        made, _kind = await pack.media.voice(
-            sentence, base + ".tmp", fallback=not pack.media.voice_sample
+        base = setup.audio_path(sentence)
+        made, _kind = await setup.media.voice(
+            sentence, base + ".tmp", fallback=not setup.media.voice_sample
         )
         if not made:
             return False
         audio = base + os.path.splitext(made)[1]
         os.replace(made, audio)
-    if pack.wants_video and not os.path.isfile(pack.video_file(sentence)):
-        video = pack.video_file(sentence)
+    if setup.wants_video and not os.path.isfile(setup.video_file(sentence)):
+        video = setup.video_file(sentence)
         temp = video[:-4] + ".tmp.mp4"
-        if not await pack.media.face(audio, temp, timeout=FACE_TIMEOUT_SECONDS):
+        if not await setup.media.face(audio, temp, timeout=FACE_TIMEOUT_SECONDS):
             return False
         os.replace(temp, video)
     return True
@@ -444,9 +531,14 @@ def status(mentor: str, lessons: list[dict]) -> dict:
 
 def prune(mentor: str) -> None:
     """Delete scripts and media that no longer match the mentor (old voice, photos or
-    personality), so packs do not grow without limit."""
+    personality), so packs do not grow without limit. What the voice bank holds stays."""
+    from backend.services import voice_bank  # imported here: it imports this module
+
     folder, setup = mentor_dir(mentor), MentorSetup(mentor)
     keep: set[str] = set()
+    for text in voice_bank.texts(mentor):
+        keep.add(os.path.basename(setup.audio_path(text)))
+        keep.add(os.path.basename(setup.video_file(text))[:-4])
     scripts = os.path.join(folder, "scripts")
     for name in os.listdir(scripts) if os.path.isdir(scripts) else []:
         path = os.path.join(scripts, name)
@@ -460,8 +552,8 @@ def prune(mentor: str) -> None:
             os.remove(path)
             continue
         for sentence in pack.sentences() or []:
-            keep.add(os.path.basename(pack.audio_path(sentence)))
-            keep.add(os.path.basename(pack.video_file(sentence))[:-4])
+            keep.add(os.path.basename(setup.audio_path(sentence)))
+            keep.add(os.path.basename(setup.video_file(sentence))[:-4])
     media = os.path.join(folder, "media")
     for name in os.listdir(media) if os.path.isdir(media) else []:
         if name.split(".")[0] not in keep:

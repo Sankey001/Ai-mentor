@@ -354,7 +354,7 @@ def test_first_sentence_is_voiced_while_the_rest_is_being_written(mentors, media
         first_sentence_voiced.set()
         return await speak(text, *args, **kwargs)
 
-    def slow_model(*_args):
+    def slow_model(*_args, **_kwargs):
         yield "ollama", "Loops repeat code. They"
         # The model only goes on once the first sentence has reached the voice.
         assert first_sentence_voiced.wait(timeout=10)
@@ -373,7 +373,7 @@ def test_the_model_is_stopped_once_enough_sentences_are_written(mentors, media, 
     make_mentor(mentors, "asha")
     state = {"asked": 0, "closed": False}
 
-    def endless_model(*_args):
+    def endless_model(*_args, **_kwargs):
         try:
             while True:
                 state["asked"] += 1
