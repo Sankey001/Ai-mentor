@@ -209,6 +209,23 @@ def test_the_lesson_on_screen_is_prepared_before_the_rest_of_the_course(packs):
     assert order == ["Lists", "Loops"]
 
 
+def test_the_lessons_asked_for_last_go_before_those_already_waiting(packs):
+    sets, dicts, files = ({**LOOPS, "title": title} for title in ("Sets", "Dicts", "Files"))
+
+    async def run():
+        async with talk.gpu_turn():  # nothing starts yet
+            lesson_packs.prepare("asha", [LOOPS, LISTS, sets, dicts])  # an older request
+            lesson_packs.prepare("asha", [files], urgent=True)  # the lesson now on screen
+            lesson_packs.prepare("asha", [dicts, sets])  # the lessons that follow it
+            waiting = [item["lesson"]["title"] for item in lesson_packs._queue]
+            lesson_packs.cancel("asha")
+        await lesson_packs._job["task"]
+        return waiting
+
+    # "Files" is urgent, so it is prepared first wherever it stands in the queue.
+    assert asyncio.run(run()) == ["Dicts", "Sets", "Files", "Loops", "Lists"]
+
+
 def test_preparation_waits_while_the_mentor_answers_a_question(packs):
     async def run():
         async with talk.gpu_turn():  # a live turn has the GPU

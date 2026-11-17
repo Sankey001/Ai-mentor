@@ -389,10 +389,12 @@ async def _run() -> None:
 def prepare(mentor: str, lessons: list[dict], urgent: bool = False) -> None:
     """Queue lessons to be prepared in the background; ready ones are skipped.
 
-    ``urgent`` lessons (the one on screen and the next) go before the rest.
+    ``urgent`` lessons (the one on screen) go before everything else. The lessons
+    asked for last go before those already waiting, in the order given, so the
+    lessons that follow the one on screen are not stuck behind an older request.
     Must be called while the event loop is running.
     """
-    setup = MentorSetup(mentor)
+    setup, asked = MentorSetup(mentor), []
     for lesson in lessons:
         pack = Pack(setup, lesson)
         _failed.pop((mentor, pack.id), None)  # asking again is how a failure is retried
@@ -404,10 +406,12 @@ def prepare(mentor: str, lessons: list[dict], urgent: bool = False) -> None:
         if waiting:
             waiting["urgent"] = waiting["urgent"] or urgent
         else:
-            _queue.append(
-                {"mentor": mentor, "id": pack.id, "lesson": pack.lesson, "urgent": urgent}
-            )
+            waiting = {"mentor": mentor, "id": pack.id, "lesson": pack.lesson, "urgent": urgent}
+            _queue.append(waiting)
             _job["mentors"].add(mentor)
+        if waiting not in asked:
+            asked.append(waiting)
+    _queue[:] = asked + [item for item in _queue if item not in asked]
     if _queue and _job["task"] is None:
         _job["script_seconds"], _job["sentence_seconds"] = [], []
         _job["task"] = asyncio.get_running_loop().create_task(_run())

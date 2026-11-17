@@ -394,15 +394,17 @@ describe("MentorClassroom", () => {
     expect(await screen.findByText("Loops repeat code. They save typing!")).toBeTruthy();
   });
 
-  it("prepares the open lesson and the next one, and the whole course on request", async () => {
+  it("prepares the open lesson, then the ones after it, and the whole course on request", async () => {
     service.packStatus.mockResolvedValue(packsStatus(["ready", "missing", "missing"]));
     renderAt("/mentor/1");
     await waitFor(() => expect(screen.getByLabelText("Mentor").value).toBe("asha"));
 
+    // The open lesson first, then up to five that follow it (this course has two more).
     await waitFor(() =>
-      expect(service.preparePacks).toHaveBeenCalledWith("asha", reactLessons.slice(0, 2), {
-        urgent: true,
-      }),
+      expect(service.preparePacks.mock.calls.slice(0, 2)).toEqual([
+        ["asha", reactLessons.slice(0, 1), { urgent: true }],
+        ["asha", reactLessons.slice(1, 3)],
+      ]),
     );
     expect(await screen.findByText(/1 of 3 lessons prepared/)).toBeTruthy();
     expect(screen.getByRole("button", { name: /Teach this lesson/ }).textContent).toMatch(

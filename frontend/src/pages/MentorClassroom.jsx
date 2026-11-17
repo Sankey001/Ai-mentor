@@ -37,6 +37,7 @@ const MENTOR_KEY = "ai-mentor-live-mentor";
 const MODEL_KEY = "ai-mentor-live-model";
 const THINK_KEY = "ai-mentor-live-think";
 const PACK_POLL_MS = 3000;
+const LESSONS_AHEAD = 5; // prepared after the open lesson, before the learner reaches them
 const PACK_LABEL = { ready: "Ready to play", preparing: "Being prepared", failed: "Not prepared" };
 const describe = (values) => [...values].filter(Boolean).join(" / ") || "none";
 const modelKey = (option) => `${option.provider}|${option.model}`;
@@ -186,10 +187,13 @@ export default function MentorClassroom() {
     return () => clearInterval(timer);
   }, [preparing, refreshPacks]);
 
-  // Opening a chapter prepares it and the next one in the background.
+  // Opening a chapter prepares it first, then the lessons that follow it, in the
+  // background, so they are ready by the time the learner gets there.
   useEffect(() => {
     if (!mentor || lessonIndex < 0) return;
-    preparePacks(mentor, courseLessons.slice(lessonIndex, lessonIndex + 2), { urgent: true })
+    const ahead = courseLessons.slice(lessonIndex + 1, lessonIndex + 1 + LESSONS_AHEAD);
+    preparePacks(mentor, [courseLessons[lessonIndex]], { urgent: true })
+      .then(() => ahead.length && preparePacks(mentor, ahead))
       .then(refreshPacks)
       .catch(() => {});
   }, [mentor, lessonIndex, courseLessons, refreshPacks]);
