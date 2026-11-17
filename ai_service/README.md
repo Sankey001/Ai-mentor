@@ -170,7 +170,23 @@ PORTRAIT_PYTHON=/opt/portrait/.venv/bin/python
 LIVEPORTRAIT_DIR=/opt/portrait/LivePortrait
 ```
 
-A GPU with 8 GB of memory runs both workers together. For faster lip-sync, also place the TAESD decoder (`madebyollin/taesd`) in `MuseTalk/models/taesd`; without it the full decoder is used.
+A GPU with 8 GB of memory runs both workers together (see "Sharing one GPU" for the AI model beside them). For faster lip-sync, also place the TAESD decoder (`madebyollin/taesd`) in `MuseTalk/models/taesd`; without it the full decoder is used.
+
+### Sharing one GPU
+
+The local AI model, the voice worker and the face worker together need about 9 GB while all three work. On an 8 GB GPU they therefore take turns: the reply is written, then each sentence is voiced, then lip-synced, and background work waits for a live question. Three settings in `backend/.env` tune this:
+
+| Setting                 | Default | What it does                                                                                                                                    |
+| ----------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OLLAMA_GPU_LAYERS`     | all     | Layers of `OLLAMA_MODEL` on the GPU. `18` for `gemma3:latest` keeps it loaded beside both workers on 8 GB (slower writing, far sooner speaking) |
+| `OLLAMA_KEEP_LOADED_GB` | `4`     | A local model larger than this is unloaded after each reply so the workers get the GPU                                                          |
+| `MENTOR_GPU_OVERLAP`    | off     | `true` on 12 GB or more: the voice starts on the first sentence while the model still writes, and voice and face overlap                        |
+
+### Lesson packs
+
+A lesson pack is a lesson prepared ahead of time: a script (written by `LESSON_SCRIPT_MODEL` when it is installed, else by `OLLAMA_MODEL`) plus one audio file and one talking clip per sentence. Making a pack uses the GPU in the background; playing it uses none and starts at once. A question asked during a prepared lesson is answered live, with the lesson's script at the start of the prompt.
+
+Packs are stored in `outputs/lesson_packs/<mentor>/` (not in git) and named after what they were made from, so a new personality rewrites scripts, a new voice recording re-voices them, new photos only re-make the clips, and anything already made is kept when preparation stops and resumes.
 
 ### Fallbacks
 
@@ -244,6 +260,11 @@ For direct debugging only, the underlying entry point is `ai_service/backend/gra
 | `GET`    | `/transcript-stream/{filename}` | Serve a local transcript file                                                            |
 | `POST`   | `/talk`                         | Live conversation: streams the mentor's reply sentence by sentence as Server-Sent Events |
 | `GET`    | `/talk/status`                  | Report whether the voice and face workers are running                                    |
+| `POST`   | `/lesson-packs/prepare`         | Prepare lessons for a mentor in the background (`urgent` ones first)                     |
+| `POST`   | `/lesson-packs/status`          | Progress of a mentor's lesson packs: ready, waiting, time left, size on disk             |
+| `POST`   | `/lesson-packs/pack`            | The sentences and clips of one prepared lesson, ready to play                            |
+| `DELETE` | `/lesson-packs/{mentor}/queue`  | Stop preparing a mentor's lessons; finished ones are kept                                |
+| `GET`    | `/pack-media/{mentor}/{file}`   | Serve one audio file or clip of a lesson pack                                            |
 | `GET`    | `/mentors`                      | List mentors with their voice type and preparation state                                 |
 | `POST`   | `/mentors`                      | Create a mentor from uploaded images and an optional voice recording                     |
 | `GET`    | `/mentors/{name}`               | Return one mentor's settings and photo names for editing                                 |

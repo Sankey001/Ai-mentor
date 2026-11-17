@@ -219,6 +219,23 @@
   align-items: center;
   gap: 6px;
 }
+.mt-prepare {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+.mt-progress {
+  width: 140px;
+  height: 6px;
+  accent-color: var(--color-primary, #6366f1);
+}
+.mt-prepare-doing {
+  font-style: italic;
+}
 .mt-notice {
   padding: 10px 14px;
   margin-bottom: 16px;

@@ -503,7 +503,7 @@ def test_the_chosen_standard_voice_is_used_in_conversation(tmp_path, monkeypatch
     )
     monkeypatch.setattr(media_processor, "BASE_DIR", str(tmp_path))
     monkeypatch.setattr(talk, "TALK_DIR", str(tmp_path / "outputs" / "talk"))
-    monkeypatch.setattr(talk, "write_reply", lambda *_args: ("Hello.", "gemini"))
+    monkeypatch.setattr(talk, "reply_pieces", lambda *_args: iter([("gemini", "Hello.")]))
     used = []
 
     async def stock_tts(_text, output, **kwargs):

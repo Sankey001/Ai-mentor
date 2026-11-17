@@ -21,6 +21,22 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b") or "qwen2.5:7b"
 LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "60") or "60")
 # A local model is slower, and its first call also loads it into memory.
 OLLAMA_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180") or "180")
+# A local model up to this size (GB of GPU memory) stays loaded while the voice and
+# face workers run; a larger one is unloaded first so the workers get the GPU.
+OLLAMA_KEEP_LOADED_GB = float(os.getenv("OLLAMA_KEEP_LOADED_GB", "4") or "4")
+# The local model that writes lesson scripts ahead of time, when it is installed;
+# otherwise OLLAMA_MODEL writes them. It can be large and slow: nobody is waiting.
+LESSON_SCRIPT_MODEL = os.getenv("LESSON_SCRIPT_MODEL", "qwen3.5:9b") or "qwen3.5:9b"
+# How many of OLLAMA_MODEL's layers run on the GPU; 0 lets Ollama decide (all that
+# fit). On an 8 GB GPU shared with the voice and face workers, gemma3:latest with 18
+# layers leaves them room: replies are written slower (about 28 instead of 76
+# tokens a second) but nothing is pushed out of GPU memory, which costs far more.
+OLLAMA_GPU_LAYERS = int(os.getenv("OLLAMA_GPU_LAYERS", "0") or "0")
+# The local model, the voice worker and the face worker need about 9 GB when they
+# all work at the same moment. Off (the default, for 8 GB GPUs): they take turns
+# and each runs at full speed. On (12 GB or more): the voice starts on the first
+# sentence while the model is still writing, and voice and face overlap.
+MENTOR_GPU_OVERLAP = (os.getenv("MENTOR_GPU_OVERLAP", "") or "").strip().lower() in ("1", "true", "yes")
 
 # Optional: Fallback AI provider
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")

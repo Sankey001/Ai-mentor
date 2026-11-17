@@ -32,6 +32,48 @@ const getJson = async (path, signal) => {
   return response.json();
 };
 
+const postJson = async (path, body, signal) => {
+  const response = await fetch(`${AI_SERVICE_URL}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!response.ok) throw await explain(response);
+  return response.json();
+};
+
+// How the service names a lesson. Prepared lessons are found by exactly these three
+// values, so every call about a lesson builds them here.
+export const lessonInfo = (course, lesson) => ({
+  course: course?.title || "",
+  module: lesson.moduleTitle || "",
+  title: lesson.title,
+});
+
+// Prepared lessons ("lesson packs"): written, voiced and lip-synced ahead of time.
+// `urgent` puts the lesson on screen and the next one before a whole course.
+export const preparePacks = (mentor, lessons, { urgent = false } = {}) =>
+  postJson("/lesson-packs/prepare", { mentor, lessons, urgent });
+// { lessons: [{id, state, error}] in the order asked, ready, total, preparing, doing,
+//   seconds_left, bytes }
+export const packStatus = (mentor, lessons, signal) =>
+  postJson("/lesson-packs/status", { mentor, lessons }, signal);
+// { state, sentences: [{text, kind, url, voice, face}] } with sentences only when "ready"
+export const getPack = (mentor, lesson) => postJson("/lesson-packs/pack", { mentor, lesson });
+export const stopPreparing = async (mentor) => {
+  const response = await fetch(
+    `${AI_SERVICE_URL}/lesson-packs/${encodeURIComponent(mentor)}/queue`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) throw await explain(response);
+};
+
+export const formatTimeLeft = (seconds) =>
+  seconds < 90 ? "about a minute" : `about ${Math.round(seconds / 60)} minutes`;
+export const formatSize = (bytes) =>
+  bytes < 1e9 ? `${Math.max(1, Math.round(bytes / 1e6))} MB` : `${(bytes / 1e9).toFixed(1)} GB`;
+
 export const listMentors = async (signal) => (await getJson("/mentors", signal)).mentors;
 export const workerStatus = (signal) => getJson("/talk/status", signal);
 // { default: {source, provider, model}, options: [{source, provider, model, label, available}] }

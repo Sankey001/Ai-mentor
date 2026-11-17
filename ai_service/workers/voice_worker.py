@@ -89,6 +89,11 @@ class VoiceWorker:
                 wav = self.model.generate(chunk, exaggeration=expressiveness)
             pieces += [wav.cpu(), pause]
         audio = torch.cat(pieces[:-1], dim=1)
+        if self.device == "cuda":
+            # Hand cached memory back (about 0.4 GB), so the AI model and the face
+            # worker have more room on a small GPU.
+            del wav
+            torch.cuda.empty_cache()
 
         import torchaudio
 

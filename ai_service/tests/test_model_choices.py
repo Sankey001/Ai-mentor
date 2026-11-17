@@ -84,9 +84,9 @@ def test_thinking_reply_turns_on_think_with_room_for_reasoning(monkeypatch):
 
     def ollama(system_instruction, user_data, **kwargs):
         calls.append(kwargs)
-        return "Answer."
+        return iter(["Answer."])
 
-    monkeypatch.setattr(talk, "generate_ollama_content", ollama)
+    monkeypatch.setattr(talk, "stream_ollama_content", ollama)
 
     talk.write_reply("ada", "hi", [], None, ("ollama", "qwen3.5:9b"), True)
     talk.write_reply("ada", "hi", [], None, ("ollama", "qwen3.5:9b"))
@@ -102,12 +102,12 @@ def test_thinking_that_runs_out_of_room_answers_without_thinking(monkeypatch):
 
     def ollama(system_instruction, user_data, **kwargs):
         calls.append(kwargs["think"])
-        return "" if kwargs["think"] else "Quick answer."
+        return iter([""] if kwargs["think"] else ["Quick ", "answer."])
 
     def online(*_args, **_kwargs):
         raise AssertionError("a local pick must not reach an online API")
 
-    monkeypatch.setattr(talk, "generate_ollama_content", ollama)
+    monkeypatch.setattr(talk, "stream_ollama_content", ollama)
     monkeypatch.setattr(talk, "generate_gemini_content", online)
     monkeypatch.setattr(talk, "generate_groq_content", online)
 
@@ -118,22 +118,25 @@ def test_thinking_that_runs_out_of_room_answers_without_thinking(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("worker_url", "provider", "released"),
+    ("worker_url", "provider", "fits", "released"),
     [
-        ("http://127.0.0.1:8102", "ollama", ["qwen3.5:9b"]),
-        ("", "ollama", []),  # no voice or face worker: keep the model loaded
-        ("http://127.0.0.1:8102", "gemini", []),  # nothing local to unload
+        ("http://127.0.0.1:8102", "ollama", False, ["qwen3.5:9b"]),
+        # A model small enough to share the GPU with the workers stays loaded.
+        ("http://127.0.0.1:8102", "ollama", True, []),
+        ("", "ollama", False, []),  # no voice or face worker: keep the model loaded
+        ("http://127.0.0.1:8102", "gemini", False, []),  # nothing local to unload
     ],
 )
-def test_local_model_is_unloaded_before_voice_and_face_work(
-    monkeypatch, tmp_path, worker_url, provider, released
+def test_only_a_large_local_model_is_unloaded_before_voice_and_face_work(
+    monkeypatch, tmp_path, worker_url, provider, fits, released
 ):
     import asyncio
 
     calls = []
     monkeypatch.setattr(config, "FACE_WORKER_URL", worker_url)
     monkeypatch.setattr(talk, "TALK_DIR", str(tmp_path))
-    monkeypatch.setattr(talk, "write_reply", lambda *_args: ("Hello.", provider))
+    monkeypatch.setattr(talk, "reply_pieces", lambda *_args: iter([(provider, "Hello.")]))
+    monkeypatch.setattr(talk, "fits_beside_workers", lambda _model: fits)
     monkeypatch.setattr(talk, "release_ollama_model", calls.append)
     monkeypatch.setattr(talk, "get_mentor_clips", lambda _mentor: [])
     monkeypatch.setattr(talk.media_workers, "speak", lambda *_a, **_k: asyncio.sleep(0, False))
@@ -144,8 +147,26 @@ def test_local_model_is_unloaded_before_voice_and_face_work(
 
     events = asyncio.run(run())
 
-    assert events[0]["type"] == "reply"
+    assert [e["provider"] for e in events if e["type"] == "reply"] == [provider]
     assert calls == released
+
+
+@pytest.mark.parametrize(
+    ("model", "loaded_bytes", "fits"),
+    [
+        ("gemma3:latest", 2_900_000_000, True),
+        ("gemma3:latest", 0, True),  # not loaded yet: judged by its download size
+        ("qwen3.5:9b", 5_600_000_000, False),
+        ("qwen3.5:9b", None, False),
+        ("unknown:1b", 0, False),
+    ],
+)
+def test_a_model_fits_beside_the_workers_by_its_gpu_memory(
+    ollama_tags, monkeypatch, model, loaded_bytes, fits
+):
+    monkeypatch.setattr(talk, "loaded_model_gpu_bytes", lambda _model: loaded_bytes)
+
+    assert talk.fits_beside_workers(model) is fits
 
 
 def test_talk_refuses_thinking_for_a_model_that_cannot_think(ollama_tags, keys, monkeypatch):
@@ -188,7 +209,7 @@ def test_local_pick_uses_that_model_and_never_goes_online(monkeypatch):
     def online(*_args, **_kwargs):
         raise AssertionError("a local pick must not reach an online API")
 
-    monkeypatch.setattr(talk, "generate_ollama_content", ollama)
+    monkeypatch.setattr(talk, "stream_ollama_content", ollama)
     monkeypatch.setattr(talk, "generate_gemini_content", online)
     monkeypatch.setattr(talk, "generate_groq_content", online)
 

@@ -5,7 +5,11 @@ import "./mentor.css";
 const STATE_LABEL = { idle: "Listening", thinking: "Thinking", speaking: "Speaking" };
 
 // Shows the mentor: a looping idle clip, with each spoken sentence played over it in order.
-const MentorStage = forwardRef(function MentorStage({ mentor, thinking, onSpeakingChange }, ref) {
+// `onChunkStart` hears about each sentence as it begins, so a lesson knows where it is.
+const MentorStage = forwardRef(function MentorStage(
+  { mentor, thinking, onSpeakingChange, onChunkStart },
+  ref,
+) {
   const talkingRef = useRef(null);
   const audioRef = useRef(null);
   const queueRef = useRef([]);
@@ -31,6 +35,7 @@ const MentorStage = forwardRef(function MentorStage({ mentor, thinking, onSpeaki
       return;
     }
     setPlaying(true);
+    onChunkStart?.(chunk);
     setCaption(chunk.text);
     setShowVideo(chunk.kind === "video");
     const player =

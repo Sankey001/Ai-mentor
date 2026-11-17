@@ -19,6 +19,10 @@ const service = vi.hoisted(() => ({
   workerStatus: vi.fn(),
   loadCourseContent: vi.fn(),
   streamTalk: vi.fn(),
+  preparePacks: vi.fn(),
+  packStatus: vi.fn(),
+  getPack: vi.fn(),
+  stopPreparing: vi.fn(),
   createMentor: vi.fn(),
   deleteMentor: vi.fn(),
   updateMentor: vi.fn(),
@@ -92,6 +96,47 @@ const models = {
   ],
 };
 
+// What the service says about the course's three prepared lessons ("lesson packs").
+const packsStatus = (states = ["missing", "missing", "missing"], extra = {}) => ({
+  lessons: states.map((state, index) => ({ id: `lesson-${index}`, state, error: "" })),
+  ready: states.filter((state) => state === "ready").length,
+  total: states.length,
+  preparing: states.filter((state) => state === "preparing").length,
+  doing: "",
+  seconds_left: 0,
+  bytes: 0,
+  ...extra,
+});
+const sentence = (text, n) => ({
+  text,
+  kind: "video",
+  voice: "cloned",
+  face: "lipsync",
+  url: `/pack-media/asha/${n}.mp4`,
+});
+const preparedLesson = {
+  state: "ready",
+  sentences: [
+    sentence("React is a toolkit.", 0),
+    sentence("It builds screens.", 1),
+    sentence("That is React.", 2),
+  ],
+};
+const talkingVideo = () => screen.getByLabelText("asha speaking");
+const reactLessons = [
+  {
+    course: "React Fundamentals",
+    module: "Module 1: Introduction to React",
+    title: "What is React?",
+  },
+  {
+    course: "React Fundamentals",
+    module: "Module 1: Introduction to React",
+    title: "History of React",
+  },
+  { course: "React Fundamentals", module: "Module 2: Components", title: "Props Basics" },
+];
+
 const renderAt = (path) =>
   render(
     <MemoryRouter initialEntries={[path]}>
@@ -127,6 +172,11 @@ beforeEach(() => {
     });
     onEvent({ type: "done" });
   });
+  // No lesson is prepared unless a test says so.
+  service.packStatus.mockResolvedValue(packsStatus());
+  service.preparePacks.mockResolvedValue(packsStatus());
+  service.getPack.mockResolvedValue({ state: "missing" });
+  service.stopPreparing.mockResolvedValue();
   service.createMentor.mockResolvedValue({ name: "asha", state: "preparing" });
   service.deleteMentor.mockResolvedValue();
   service.updateMentor.mockResolvedValue({ name: "asha", state: "ready" });
@@ -325,6 +375,105 @@ describe("MentorClassroom", () => {
     fireEvent.click(screen.getByRole("button", { name: "Quiz me on this" }));
 
     expect(await screen.findByText(/could not answer. Mentor not found/)).toBeTruthy();
+  });
+
+  it("shows the reply while the mentor is still writing it", async () => {
+    let finish;
+    service.streamTalk.mockImplementationOnce(async ({ onEvent }) => {
+      onEvent({ type: "text", text: "Loops repeat code." });
+      await new Promise((resolve) => (finish = resolve));
+      onEvent({ type: "reply", text: "Loops repeat code. They save typing!", provider: "ollama" });
+    });
+    renderAt("/mentor/1");
+    await waitFor(() => expect(screen.getByLabelText("Mentor").value).toBe("asha"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Quiz me on this" }));
+
+    expect(await screen.findByText("Loops repeat code.")).toBeTruthy();
+    finish();
+    expect(await screen.findByText("Loops repeat code. They save typing!")).toBeTruthy();
+  });
+
+  it("prepares the open lesson and the next one, and the whole course on request", async () => {
+    service.packStatus.mockResolvedValue(packsStatus(["ready", "missing", "missing"]));
+    renderAt("/mentor/1");
+    await waitFor(() => expect(screen.getByLabelText("Mentor").value).toBe("asha"));
+
+    await waitFor(() =>
+      expect(service.preparePacks).toHaveBeenCalledWith("asha", reactLessons.slice(0, 2), {
+        urgent: true,
+      }),
+    );
+    expect(await screen.findByText(/1 of 3 lessons prepared/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Teach this lesson/ }).textContent).toMatch(
+      /Ready to play/,
+    );
+
+    service.preparePacks.mockResolvedValue(
+      packsStatus(["ready", "preparing", "preparing"], {
+        seconds_left: 240,
+        bytes: 7_000_000,
+        doing: "Writing “History of React”",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Prepare whole course/ }));
+
+    await waitFor(() =>
+      expect(service.preparePacks).toHaveBeenLastCalledWith("asha", reactLessons),
+    );
+    expect(await screen.findByText(/2 to go, about 4 minutes left/)).toBeTruthy();
+    expect(screen.getByText(/7 MB on disk/)).toBeTruthy();
+    expect(screen.getByText("Writing “History of React”")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Stop preparing/ }));
+    await waitFor(() => expect(service.stopPreparing).toHaveBeenCalledWith("asha"));
+  });
+
+  it("plays a prepared lesson at once, pauses it for a question, then goes on", async () => {
+    service.getPack.mockResolvedValue(preparedLesson);
+    renderAt("/mentor/1");
+    await waitFor(() => expect(screen.getByLabelText("Mentor").value).toBe("asha"));
+
+    fireEvent.click(screen.getByRole("button", { name: /Teach this lesson/ }));
+
+    // The lesson plays from its files: the AI is not asked for anything.
+    expect(
+      await screen.findByText("React is a toolkit. It builds screens. That is React."),
+    ).toBeTruthy();
+    expect(screen.getByText("Prepared lesson · Voice: cloned · Face: lipsync")).toBeTruthy();
+    expect(service.getPack).toHaveBeenCalledWith("asha", reactLessons[0]);
+    expect(service.streamTalk).not.toHaveBeenCalled();
+    expect(talkingVideo().src).toMatch(/\/pack-media\/asha\/0\.mp4$/);
+    fireEvent.ended(talkingVideo());
+    expect(talkingVideo().src).toMatch(/\/pack-media\/asha\/1\.mp4$/);
+
+    // A question during sentence 2 interrupts it and is answered live.
+    const input = screen.getByLabelText("Your question");
+    fireEvent.change(input, { target: { value: "Why screens?" } });
+    fireEvent.submit(input.closest("form"));
+    await screen.findByText("AI: gemini · Voice: cloned · Face: lipsync");
+    expect(service.streamTalk.mock.calls[0][0].message).toBe("Why screens?");
+    expect(service.streamTalk.mock.calls[0][0].lesson).toEqual(reactLessons[0]);
+    expect(talkingVideo().src).toMatch(/\/talk-media\/s\/0\.mp4$/);
+
+    // Once the answer has been spoken, the lesson goes on with sentence 3.
+    fireEvent.ended(talkingVideo());
+    await waitFor(() => expect(talkingVideo().src).toMatch(/\/pack-media\/asha\/2\.mp4$/));
+    fireEvent.ended(talkingVideo());
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Stop" })).toBeNull());
+  });
+
+  it("stops a prepared lesson when the learner moves to another chapter", async () => {
+    service.getPack.mockResolvedValue(preparedLesson);
+    renderAt("/mentor/1");
+    await waitFor(() => expect(screen.getByLabelText("Mentor").value).toBe("asha"));
+    fireEvent.click(screen.getByRole("button", { name: /Teach this lesson/ }));
+    await screen.findByText("Prepared lesson · Voice: cloned · Face: lipsync");
+
+    fireEvent.click(screen.getByRole("button", { name: "Next lesson" }));
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Stop" })).toBeNull());
+    expect(window.HTMLMediaElement.prototype.pause).toHaveBeenCalled();
   });
 });
 

@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   ChevronRight,
   GraduationCap,
+  ListChecks,
   Mic,
   Send,
   SlidersHorizontal,
@@ -15,9 +16,16 @@ import LessonPicker from "../components/learning/LessonPicker";
 import MentorStage from "../components/mentor/MentorStage";
 import {
   flattenLessons,
+  formatSize,
+  formatTimeLeft,
+  getPack,
+  lessonInfo,
   listMentors,
   listModels,
   loadCourseContent,
+  packStatus,
+  preparePacks,
+  stopPreparing,
   streamTalk,
   workerStatus,
 } from "../service/mentorLive";
@@ -28,6 +36,8 @@ const QUICK_PROMPTS = ["Give me an everyday example", "Explain it more simply", 
 const MENTOR_KEY = "ai-mentor-live-mentor";
 const MODEL_KEY = "ai-mentor-live-model";
 const THINK_KEY = "ai-mentor-live-think";
+const PACK_POLL_MS = 3000;
+const PACK_LABEL = { ready: "Ready to play", preparing: "Being prepared", failed: "Not prepared" };
 const describe = (values) => [...values].filter(Boolean).join(" / ") || "none";
 const modelKey = (option) => `${option.provider}|${option.model}`;
 const savedModel = () => {
@@ -45,6 +55,9 @@ export default function MentorClassroom() {
   const historyRef = useRef([]);
   const abortRef = useRef(null);
   const recognizerRef = useRef(null);
+  // The prepared lesson being played: { sentences, next, paused }. `next` is the
+  // sentence to go on with after a question.
+  const lessonRef = useRef(null);
 
   const [course, setCourse] = useState(null);
   const [courseError, setCourseError] = useState("");
@@ -60,6 +73,7 @@ export default function MentorClassroom() {
   const [listening, setListening] = useState(false);
   const [modelChoices, setModelChoices] = useState(null);
   const [modelPick, setModelPick] = useState(savedModel);
+  const [packs, setPacks] = useState(null);
 
   // The AI that writes the mentor's replies: the learner's pick when it is still
   // usable, else the service's default, else any usable model.
@@ -87,6 +101,11 @@ export default function MentorClassroom() {
   const lessonIndex = lessons.findIndex((lesson) => lesson.id === currentLesson?.id);
   const moduleTitle = lessons[lessonIndex]?.moduleTitle || "";
   const readyMentors = mentors.filter((item) => item.state === "ready");
+  const courseLessons = useMemo(
+    () => lessons.map((lesson) => lessonInfo(course, lesson)),
+    [course, lessons],
+  );
+  const packState = packs?.lessons?.[lessonIndex]?.state;
 
   // Course chapters
   useEffect(() => {
@@ -146,8 +165,54 @@ export default function MentorClassroom() {
     logRef.current?.scrollTo?.({ top: logRef.current.scrollHeight });
   }, [messages]);
 
+  // Prepared lessons: how many of this course's are ready for this mentor.
+  const refreshPacks = useCallback(async () => {
+    if (!mentor || !courseLessons.length) return setPacks(null);
+    try {
+      setPacks(await packStatus(mentor, courseLessons));
+    } catch {
+      // Without prepared lessons the mentor teaches live.
+    }
+  }, [mentor, courseLessons]);
+
+  useEffect(() => {
+    refreshPacks();
+  }, [refreshPacks]);
+
+  const preparing = (packs?.preparing || 0) > 0;
+  useEffect(() => {
+    if (!preparing) return undefined;
+    const timer = setInterval(refreshPacks, PACK_POLL_MS);
+    return () => clearInterval(timer);
+  }, [preparing, refreshPacks]);
+
+  // Opening a chapter prepares it and the next one in the background.
+  useEffect(() => {
+    if (!mentor || lessonIndex < 0) return;
+    preparePacks(mentor, courseLessons.slice(lessonIndex, lessonIndex + 2), { urgent: true })
+      .then(refreshPacks)
+      .catch(() => {});
+  }, [mentor, lessonIndex, courseLessons, refreshPacks]);
+
+  // A lesson that is playing belongs to its chapter: leaving the chapter ends it.
+  useEffect(() => {
+    if (!lessonRef.current) return;
+    lessonRef.current = null;
+    stageRef.current?.stop();
+  }, [currentLesson?.id]);
+
+  const prepareCourse = () =>
+    preparePacks(mentor, courseLessons)
+      .then(setPacks)
+      .catch(() => {});
+  const stopPreparingCourse = () =>
+    stopPreparing(mentor)
+      .then(refreshPacks)
+      .catch(() => {});
+
   const chooseMentor = (name) => {
     abortRef.current?.abort();
+    lessonRef.current = null;
     stageRef.current?.stop();
     historyRef.current = [];
     setMessages([]);
@@ -169,9 +234,13 @@ export default function MentorClassroom() {
   const send = async ({ message = "", teach = false }) => {
     const text = message.trim();
     if (busy || !mentor || (!text && !teach)) return;
-    const lesson = currentLesson
-      ? { course: course?.title || "", module: moduleTitle, title: currentLesson.title }
-      : undefined;
+    const lesson = lessonIndex >= 0 ? courseLessons[lessonIndex] : undefined;
+    // A question pauses the lesson being played; it goes on once it is answered.
+    if (lessonRef.current) {
+      lessonRef.current.paused =
+        !teach && lessonRef.current.next < lessonRef.current.sentences.length;
+      if (!lessonRef.current.paused) lessonRef.current = null;
+    }
     const shown = text || `Teach me: ${currentLesson?.title}`;
     const id = Date.now();
     setMessages((list) => [
@@ -205,7 +274,10 @@ export default function MentorClassroom() {
         think: sentThinking,
         signal: controller.signal,
         onEvent: (event) => {
-          if (event.type === "reply") {
+          if (event.type === "text") {
+            // The reply so far, while the mentor is still writing it.
+            update({ text: event.text, pending: false });
+          } else if (event.type === "reply") {
             reply = event.text;
             answeredBy =
               event.provider === "ollama" && sentWith?.provider === "ollama"
@@ -237,8 +309,60 @@ export default function MentorClassroom() {
     }
   };
 
+  const playLesson = (from) => {
+    lessonRef.current.paused = false;
+    lessonRef.current.sentences
+      .slice(from)
+      .forEach((sentence, offset) =>
+        stageRef.current?.enqueue({ ...sentence, lessonStep: from + offset }),
+      );
+  };
+
+  // "Teach this lesson": a prepared lesson starts at once and needs no GPU; without
+  // one the mentor teaches live, as for any question.
+  const teach = async () => {
+    if (busy || !mentor || lessonIndex < 0) return;
+    let pack = null;
+    try {
+      pack = await getPack(mentor, courseLessons[lessonIndex]);
+    } catch {
+      // Not reachable or not prepared: teach live.
+    }
+    if (!pack?.sentences?.length) return send({ teach: true });
+    stageRef.current?.stop();
+    const id = Date.now();
+    const shown = `Teach me: ${currentLesson.title}`;
+    const text = pack.sentences.map((sentence) => sentence.text).join(" ");
+    const voices = new Set(pack.sentences.map((sentence) => sentence.voice));
+    const faces = new Set(pack.sentences.map((sentence) => sentence.face));
+    setMessages((list) => [
+      ...list,
+      { id: `${id}-q`, role: "learner", text: shown },
+      {
+        id: `${id}-a`,
+        role: "mentor",
+        text,
+        meta: `Prepared lesson · Voice: ${describe(voices)} · Face: ${describe(faces)}`,
+      },
+    ]);
+    // The service adds the full script to questions itself; the history only notes it.
+    historyRef.current.push(
+      { role: "learner", text: shown },
+      { role: "mentor", text: text.slice(0, 600) },
+    );
+    lessonRef.current = { sentences: pack.sentences, next: 0, paused: false };
+    playLesson(0);
+    return undefined;
+  };
+
+  // After a question is answered and spoken, the lesson goes on with its next sentence.
+  useEffect(() => {
+    if (!busy && !speaking && lessonRef.current?.paused) playLesson(lessonRef.current.next);
+  }, [busy, speaking]);
+
   const stopAll = () => {
     abortRef.current?.abort();
+    lessonRef.current = null;
     stageRef.current?.stop();
     setBusy(false);
     setMessages((list) => list.filter((item) => !item.pending));
@@ -377,6 +501,28 @@ export default function MentorClassroom() {
             </span>
           </div>
           <div className="lw-toolbar-actions">
+            {preparing ? (
+              <button
+                type="button"
+                className="lw-button"
+                onClick={stopPreparingCourse}
+                title="Stop preparing lessons; what is finished is kept"
+              >
+                <Square size={15} aria-hidden="true" />
+                <span>Stop preparing</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="lw-button"
+                onClick={prepareCourse}
+                disabled={!canTalk || !packs || packs.ready === packs.total}
+                title="Write, voice and lip-sync every lesson now, so each one plays at once later"
+              >
+                <ListChecks size={17} aria-hidden="true" />
+                <span>Prepare whole course</span>
+              </button>
+            )}
             <Link className="lw-button" to="/mentor-studio">
               <UserPlus size={17} aria-hidden="true" />
               <span>Create a mentor</span>
@@ -387,6 +533,24 @@ export default function MentorClassroom() {
           </div>
         </div>
 
+        {packs && (
+          <div className="mt-prepare" role="status">
+            <progress
+              className="mt-progress"
+              value={packs.ready}
+              max={packs.total}
+              aria-label="Prepared lessons"
+            />
+            <span>
+              {packs.ready} of {packs.total} lessons prepared
+              {packs.bytes > 0 && ` · ${formatSize(packs.bytes)} on disk`}
+              {preparing &&
+                ` · ${packs.preparing} to go, ${formatTimeLeft(packs.seconds_left)} left`}
+            </span>
+            {preparing && packs.doing && <span className="mt-prepare-doing">{packs.doing}</span>}
+          </div>
+        )}
+
         <div className="mt-workspace">
           <div className="lw-media-column">
             <div className="lw-video-card">
@@ -395,6 +559,11 @@ export default function MentorClassroom() {
                 mentor={canTalk ? mentor : ""}
                 thinking={busy && !speaking}
                 onSpeakingChange={setSpeaking}
+                onChunkStart={(chunk) => {
+                  if (lessonRef.current && chunk.lessonStep !== undefined) {
+                    lessonRef.current.next = chunk.lessonStep + 1;
+                  }
+                }}
               />
               <div className="lw-media-footer">
                 <button
@@ -410,11 +579,21 @@ export default function MentorClassroom() {
                 <button
                   type="button"
                   className="lw-button lw-button--primary"
-                  onClick={() => send({ teach: true })}
+                  onClick={teach}
                   disabled={!canTalk || busy || !currentLesson}
+                  title={
+                    packState === "ready"
+                      ? "Prepared: starts at once"
+                      : "Not prepared yet: the mentor teaches it live"
+                  }
                 >
                   <GraduationCap size={17} aria-hidden="true" />
                   <span>Teach this lesson</span>
+                  {PACK_LABEL[packState] && (
+                    <span className="mt-badge" data-state={packState}>
+                      {PACK_LABEL[packState]}
+                    </span>
+                  )}
                 </button>
                 <button
                   type="button"
@@ -503,12 +682,14 @@ export default function MentorClassroom() {
                   <Mic size={17} aria-hidden="true" />
                 </button>
               )}
-              {busy || speaking ? (
+              {(busy || speaking) && (
                 <button type="button" className="lw-button" onClick={stopAll} aria-label="Stop">
                   <Square size={15} aria-hidden="true" />
                   <span>Stop</span>
                 </button>
-              ) : (
+              )}
+              {/* A question can be sent while the mentor is speaking: it interrupts. */}
+              {!busy && (
                 <button
                   type="submit"
                   className="lw-button lw-button--primary"

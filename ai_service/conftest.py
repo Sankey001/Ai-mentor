@@ -7,6 +7,11 @@ os.environ.setdefault("GROQ_API_KEY", "test-key")
 # Tests stub the Gemini and Groq calls; a local backend/.env choosing another
 # provider (AI_PROVIDER=ollama) must not route them to a real model.
 os.environ["AI_PROVIDER"] = "gemini"
+# Likewise this computer's GPU tuning must not change what the tests expect.
+os.environ["OLLAMA_GPU_LAYERS"] = "0"
+os.environ["OLLAMA_KEEP_LOADED_GB"] = "4"
+os.environ["MENTOR_GPU_OVERLAP"] = ""
+os.environ["LESSON_SCRIPT_MODEL"] = "qwen3.5:9b"
 
 
 @pytest.fixture(autouse=True)
@@ -38,6 +43,15 @@ def disable_media_workers(monkeypatch):
 
     monkeypatch.setattr(config, "VOICE_WORKER_URL", "")
     monkeypatch.setattr(config, "FACE_WORKER_URL", "")
+
+
+@pytest.fixture(autouse=True)
+def no_real_ollama(monkeypatch):
+    """Keep tests from reaching an Ollama running on this machine."""
+    import importlib
+
+    provider = importlib.import_module("backend.services.providers.ollama_provider")
+    monkeypatch.setattr(provider, "OLLAMA_URL", "http://127.0.0.1:9")
 
 
 @pytest.fixture(autouse=True)

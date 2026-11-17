@@ -363,6 +363,9 @@ def delete_mentor(name: str) -> None:
         raise StudioError(403, "Only mentors created by upload can be removed here.")
     shutil.rmtree(os.path.join(_input_dir(), name))
     _states.pop(name, None)
+    from backend.services import lesson_packs  # imported here: it imports the talk service
+
+    lesson_packs.delete_mentor_packs(name)
 
 
 def portrait_command() -> list[str] | None:

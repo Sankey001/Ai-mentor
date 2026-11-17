@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from backend.services import (
+    lesson_packs,
     media_processor,
     media_workers,
     mentor_pack,
@@ -74,8 +75,13 @@ async def talk_to_mentor(body: TalkRequest):
             detail="Thinking needs a local model that supports it, such as qwen3.5.",
         )
 
+    # A question about a prepared lesson is answered with its script in view.
+    script = lesson_packs.script_text(mentor, lesson) if lesson and body.message else None
+
     async def events():
-        async for event in talk.talk(mentor, body.message, history, lesson, choice, body.think):
+        async for event in talk.talk(
+            mentor, body.message, history, lesson, choice, body.think, script
+        ):
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(

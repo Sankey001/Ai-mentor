@@ -1,7 +1,9 @@
 """AI_PROVIDER=ollama: a local model replaces Gemini as the primary provider."""
 
+import contextlib
 import importlib
 import json
+import json as json_module
 from types import SimpleNamespace
 
 import httpx
@@ -50,11 +52,28 @@ class FakeOllama:
         body = {"message": {"role": "assistant", "content": self.reply}}
         return httpx.Response(self.status, json=body, request=request)
 
+    @contextlib.contextmanager
+    def stream(self, method, url, json, timeout):
+        """Stands in for httpx.stream: the reply arrives one word per line."""
+        self.url = url
+        self.bodies.append(json)
+        words = self.reply.split(" ")
+        lines = [
+            {"message": {"content": word + (" " if n < len(words) - 1 else "")}, "done": False}
+            for n, word in enumerate(words)
+        ] + [{"message": {"content": ""}, "done": True}]
+        content = "".join(json_module.dumps(line) + "\n" for line in lines)
+        self.response = httpx.Response(
+            self.status, content=content.encode(), request=httpx.Request(method, url)
+        )
+        yield self.response
+
 
 @pytest.fixture
 def ollama(monkeypatch):
     fake = FakeOllama()
     monkeypatch.setattr(ollama_provider.httpx, "post", fake)
+    monkeypatch.setattr(ollama_provider.httpx, "stream", fake.stream)
     return fake
 
 
@@ -173,3 +192,35 @@ def test_mentor_reply_uses_ollama_when_selected(use_ollama, ollama, monkeypatch)
         "Loops repeat code.",
         "ollama",
     )
+
+
+def test_streamed_reply_arrives_piece_by_piece(ollama):
+    ollama.reply = "Loops repeat code."
+    messages = [{"role": "user", "content": "lesson"}, {"role": "user", "content": "question"}]
+
+    pieces = list(ollama_provider.stream_ollama_content("Be brief.", messages, max_tokens=50))
+
+    assert pieces == ["Loops ", "repeat ", "code."]
+    body = ollama.bodies[0]
+    assert body["stream"] is True and body["think"] is False
+    assert body["keep_alive"] == ollama_provider.KEEP_ALIVE
+    assert body["messages"] == [{"role": "system", "content": "Be brief."}, *messages]
+    assert body["options"]["num_predict"] == 50
+
+
+def test_streamed_reply_reports_a_missing_model(ollama):
+    ollama.status = 404
+
+    with pytest.raises(RuntimeError, match="not downloaded"):
+        list(ollama_provider.stream_ollama_content("x", "hi"))
+
+
+def test_gpu_memory_of_a_loaded_model(monkeypatch):
+    def ps(url, timeout):
+        models = [{"name": "gemma3:latest", "size_vram": 2_900_000_000}]
+        return httpx.Response(200, json={"models": models}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(ollama_provider.httpx, "get", ps)
+
+    assert ollama_provider.loaded_model_gpu_bytes("gemma3:latest") == 2_900_000_000
+    assert ollama_provider.loaded_model_gpu_bytes("qwen3.5:9b") == 0
